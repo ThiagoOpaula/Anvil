@@ -177,3 +177,7 @@ impl ApiCache {
             .map_err(|e| Error::Other(format!("failed to serialize cache entry: {}", e)))
     }
 }
+
+#[cfg(test)]
+#[path = "tests/test_cache.rs"]
+mod tests;

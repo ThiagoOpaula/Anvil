@@ -156,28 +156,3 @@ pub async fn batch_identify(
         .collect()
         .await
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn find_jars_nonexistent_dir() {
-        let result = find_jars(Path::new("/nonexistent/dir/abc123")).unwrap();
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn compute_sha1_known_digest() {
-        // empty file → da39a3ee5e6b4b0d3255bfef95601890afd80709
-        let dir = std::env::temp_dir().join("mod-updater-test-sha1");
-        let _ = fs::create_dir_all(&dir);
-        let path = dir.join("empty.bin");
-        fs::write(&path, b"").unwrap();
-
-        let hash = compute_sha1(&path).unwrap();
-        assert_eq!(hash, "da39a3ee5e6b4b0d3255bfef95601890afd80709");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-}

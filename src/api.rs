@@ -205,3 +205,7 @@ impl ApiClient for ModrinthApi {
         Ok(sha1_hex)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/test_api.rs"]
+mod tests;
