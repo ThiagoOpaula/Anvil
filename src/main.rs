@@ -21,11 +21,11 @@ async fn main() -> anyhow::Result<()> {
 
     // ── 2. Set up tracing subscriber ─────────────────────────────────────
     let default_level = match &cli.command {
-        Some(Command::Update(args)) if args.common.verbose => "mod_updater=debug",
-        Some(Command::Update(args)) if args.common.quiet => "mod_updater=error",
-        Some(Command::List(args)) if args.common.verbose => "mod_updater=debug",
-        Some(Command::List(args)) if args.common.quiet => "mod_updater=error",
-        _ => "mod_updater=info",
+        Some(Command::Update(args)) if args.common.verbose => "anvil=debug",
+        Some(Command::Update(args)) if args.common.quiet => "anvil=error",
+        Some(Command::List(args)) if args.common.verbose => "anvil=debug",
+        Some(Command::List(args)) if args.common.quiet => "anvil=error",
+        _ => "anvil=info",
     };
 
     let filter =
@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(filter)
         .with_target(false)
         .with_level(true)
+        .with_ansi(false)
         .init();
 
     // ── 3. Load config file ──────────────────────────────────────────────
