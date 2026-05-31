@@ -1,0 +1,5 @@
+/target/
+/mod-updater/
+__pycache__/
+**/*.rs.bk
+*.pdb
