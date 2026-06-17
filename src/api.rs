@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 const BASE_URL: &str = "https://api.modrinth.com/v2";
-const USER_AGENT: &str = "anvil/0.1.0 (thiag@github)";
+const USER_AGENT: &str = "anvil/0.2.0 (thiag@github)";
 const RATE_LIMIT_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_RETRIES: usize = 3;
 
