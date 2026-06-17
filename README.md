@@ -213,4 +213,6 @@ CLI flags always win over config values. The GUI Settings tab writes this file a
 
 <p align="center">
   <sub>Built with Rust. Powered by <a href="https://modrinth.com">Modrinth</a>. ⚒</sub>
+  <br>
+  <sub>Made using <a href="https://claude.ai/code">Claude Code</a> + DeepSeek V4 Pro</sub>
 </p>
