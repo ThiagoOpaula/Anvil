@@ -211,7 +211,8 @@ CLI flags always win over config values. The GUI Settings tab writes this file a
 - 🎨 **Dark mode toggle** — switch between light and dark themes
 - 🔗 **Modrinth links** — click a mod to open its project page
 - 📤 **Export mod list** — save scan results as CSV / Markdown / JSON
-- 🔔 **App update check** — notify when a new version of Anvil is available
+- 🔔 **App update check** — notify when a new version of Anvil is available 
+-  ⬇️ **Update check on startup** — on startup, hit the GitHub releases API and show "v0.4.0 available!" with a download link
 - ⌨️ **Keyboard shortcuts** — `Ctrl+R` scan, `Ctrl+U` check updates
 - 🪟 **Remember window size** — persist window geometry across sessions
 
