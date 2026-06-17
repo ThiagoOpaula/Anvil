@@ -321,9 +321,19 @@ pub trait ProgressRenderer: Send + Sync {
     /// Print a formatted table to stdout.
     fn print_table(&self, headers: &[&str], rows: &[Vec<String>]);
 
+    /// Report structured per-mod outcomes before they're flattened to strings.
+    /// The default is a no-op — the CLI renders via `print_table` instead.
+    fn report_outcomes(&self, _outcomes: &[ModOutcome]) {}
+
     /// Display a changelog block for a mod.
     fn print_changelog(&self, slug: &str, version: &str, changelog: &str);
 
     /// Prompt the user for a yes/no answer. Returns `true` on yes.
     fn confirm(&self, question: &str) -> bool;
+
+    /// Whether the current operation has been cancelled by the user.
+    /// The updater polls this at phase boundaries and returns early if `true`.
+    fn is_cancelled(&self) -> bool {
+        false
+    }
 }

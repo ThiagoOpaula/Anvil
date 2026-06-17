@@ -5,10 +5,13 @@
 mod common;
 use common::helpers::*;
 
-use std::path::PathBuf;
+use std::sync::Mutex;
 
 use anvil::locking;
 use anvil::types::{LockedMod, ModOutcome};
+
+/// All locking tests share a global override — serialize them.
+static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 // ── build_locked_mods ────────────────────────────────────────────────
 
@@ -89,39 +92,44 @@ fn diff_detects_changes() {
 // ── lockfile_path ────────────────────────────────────────────────────
 
 #[test]
-fn lockfile_path_joins_correctly() {
-    let mods_dir = PathBuf::from("/some/mods");
-    let path = locking::lockfile_path(&mods_dir);
-    assert_eq!(path, PathBuf::from("/some/mods/anvil.lock"));
+fn lockfile_path_ends_with_lock_json() {
+    let path = locking::lockfile_path();
+    assert!(path.ends_with("lock.json"));
+    assert!(path.to_string_lossy().contains("anvil"));
 }
 
 #[test]
-fn lockfile_path_joins_windows_style() {
-    let mods_dir = PathBuf::from(r"C:\Users\mc\mods");
-    let path = locking::lockfile_path(&mods_dir);
-    assert_eq!(path, PathBuf::from(r"C:\Users\mc\mods\anvil.lock"));
+fn lockfile_path_is_absolute() {
+    let path = locking::lockfile_path();
+    assert!(path.is_absolute());
 }
 
-// ── read_lockfile ────────────────────────────────────────────────────
+// ── read_lockfile / write_lockfile ──────────────────────────────────
+
+fn set_test_lockfile(name: &str) -> impl std::ops::DerefMut<Target = ()> {
+    let guard = TEST_MUTEX.lock().unwrap();
+    let dir = std::env::temp_dir().join(format!("anvil-test-{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    locking::set_lockfile_override(Some(dir.join("lock.json")));
+    guard
+}
+
+fn clear_test_lockfile() {
+    locking::set_lockfile_override(None);
+}
 
 #[test]
 fn read_lockfile_missing_returns_none() {
-    let dir = std::env::temp_dir().join("anvil-test-missing-lock");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let result = locking::read_lockfile(&dir).unwrap();
+    let _guard = set_test_lockfile("missing");
+    let result = locking::read_lockfile().unwrap();
     assert!(result.is_none());
-
-    let _ = std::fs::remove_dir_all(&dir);
+    clear_test_lockfile();
 }
 
 #[test]
 fn read_lockfile_valid_json_returns_some() {
-    let dir = std::env::temp_dir().join("anvil-test-valid-lock");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-
+    let _guard = set_test_lockfile("valid");
     let lockfile = make_lockfile(vec![LockedMod {
         filename: "test.jar".into(),
         sha1: "abc".into(),
@@ -133,9 +141,9 @@ fn read_lockfile_valid_json_returns_some() {
         game_versions: vec!["1.21".into()],
     }]);
     let json = serde_json::to_string_pretty(&lockfile).unwrap();
-    std::fs::write(dir.join("anvil.lock"), json).unwrap();
+    std::fs::write(locking::lockfile_path(), json).unwrap();
 
-    let result = locking::read_lockfile(&dir).unwrap();
+    let result = locking::read_lockfile().unwrap();
     assert!(result.is_some());
     let read = result.unwrap();
     assert_eq!(read.version, 1);
@@ -143,45 +151,32 @@ fn read_lockfile_valid_json_returns_some() {
     assert_eq!(read.mods[0].slug, "test-mod");
     assert_eq!(read.mods[0].version_number, "1.0.0");
     assert_eq!(read.mods[0].filename, "test.jar");
-
-    let _ = std::fs::remove_dir_all(&dir);
+    clear_test_lockfile();
 }
 
 #[test]
 fn read_lockfile_invalid_json_returns_err() {
-    let dir = std::env::temp_dir().join("anvil-test-invalid-lock");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let _guard = set_test_lockfile("invalid");
+    std::fs::write(locking::lockfile_path(), "not valid json {{{").unwrap();
 
-    std::fs::write(dir.join("anvil.lock"), "not valid json {{{").unwrap();
-
-    let result = locking::read_lockfile(&dir);
+    let result = locking::read_lockfile();
     assert!(result.is_err());
-
-    let _ = std::fs::remove_dir_all(&dir);
+    clear_test_lockfile();
 }
 
 #[test]
 fn read_lockfile_empty_file_returns_err() {
-    let dir = std::env::temp_dir().join("anvil-test-empty-lock");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let _guard = set_test_lockfile("empty");
+    std::fs::write(locking::lockfile_path(), "").unwrap();
 
-    std::fs::write(dir.join("anvil.lock"), "").unwrap();
-
-    let result = locking::read_lockfile(&dir);
+    let result = locking::read_lockfile();
     assert!(result.is_err());
-
-    let _ = std::fs::remove_dir_all(&dir);
+    clear_test_lockfile();
 }
-
-// ── write_lockfile (round-trip) ──────────────────────────────────────
 
 #[test]
 fn write_lockfile_round_trip() {
-    let dir = std::env::temp_dir().join("anvil-test-write-lock");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let _guard = set_test_lockfile("roundtrip");
 
     let mods = vec![
         LockedMod {
@@ -206,34 +201,28 @@ fn write_lockfile_round_trip() {
         },
     ];
 
-    locking::write_lockfile(&dir, Some("1.21"), Some("fabric"), &mods).unwrap();
+    locking::write_lockfile(Some("1.21"), Some("fabric"), &mods).unwrap();
 
-    // Verify file exists on disk
-    let lock_path = locking::lockfile_path(&dir);
+    let lock_path = locking::lockfile_path();
     assert!(lock_path.exists());
 
-    // Round-trip: read it back
-    let read = locking::read_lockfile(&dir).unwrap().expect("lockfile should exist");
+    let read = locking::read_lockfile().unwrap().expect("lockfile should exist");
     assert_eq!(read.mods.len(), 2);
     assert_eq!(read.target_game_version, Some("1.21".to_string()));
     assert_eq!(read.target_loader, Some("fabric".to_string()));
     assert_eq!(read.version, 1);
     assert!(!read.updated_at.is_empty());
-
-    // Order preserved
     assert_eq!(read.mods[0].slug, "mod-a");
     assert_eq!(read.mods[0].version_number, "1.0.0");
     assert_eq!(read.mods[1].slug, "mod-b");
     assert_eq!(read.mods[1].version_number, "2.0.0");
 
-    let _ = std::fs::remove_dir_all(&dir);
+    clear_test_lockfile();
 }
 
 #[test]
 fn write_lockfile_with_none_filters() {
-    let dir = std::env::temp_dir().join("anvil-test-write-lock-none");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let _guard = set_test_lockfile("none-filters");
 
     let mods = vec![LockedMod {
         filename: "x.jar".into(),
@@ -246,51 +235,57 @@ fn write_lockfile_with_none_filters() {
         game_versions: vec![],
     }];
 
-    locking::write_lockfile(&dir, None, None, &mods).unwrap();
+    locking::write_lockfile(None, None, &mods).unwrap();
 
-    let read = locking::read_lockfile(&dir).unwrap().unwrap();
+    let read = locking::read_lockfile().unwrap().unwrap();
     assert_eq!(read.target_game_version, None);
     assert_eq!(read.target_loader, None);
     assert_eq!(read.mods.len(), 1);
 
-    let _ = std::fs::remove_dir_all(&dir);
+    clear_test_lockfile();
 }
 
 #[test]
 fn write_lockfile_overwrites_existing() {
-    let dir = std::env::temp_dir().join("anvil-test-overwrite-lock");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let _guard = set_test_lockfile("overwrite");
 
-    let first = vec![LockedMod {
-        filename: "first.jar".into(),
-        sha1: "abc".into(),
-        project_id: "p1".into(),
-        slug: "first".into(),
-        version_id: "v1".into(),
-        version_number: "1.0".into(),
-        loaders: vec![],
-        game_versions: vec![],
-    }];
-    locking::write_lockfile(&dir, None, None, &first).unwrap();
+    locking::write_lockfile(
+        None,
+        None,
+        &[LockedMod {
+            filename: "first.jar".into(),
+            sha1: "abc".into(),
+            project_id: "p1".into(),
+            slug: "first".into(),
+            version_id: "v1".into(),
+            version_number: "1.0".into(),
+            loaders: vec![],
+            game_versions: vec![],
+        }],
+    )
+    .unwrap();
 
-    let second = vec![LockedMod {
-        filename: "second.jar".into(),
-        sha1: "def".into(),
-        project_id: "p2".into(),
-        slug: "second".into(),
-        version_id: "v2".into(),
-        version_number: "2.0".into(),
-        loaders: vec![],
-        game_versions: vec![],
-    }];
-    locking::write_lockfile(&dir, None, None, &second).unwrap();
+    locking::write_lockfile(
+        None,
+        None,
+        &[LockedMod {
+            filename: "second.jar".into(),
+            sha1: "def".into(),
+            project_id: "p2".into(),
+            slug: "second".into(),
+            version_id: "v2".into(),
+            version_number: "2.0".into(),
+            loaders: vec![],
+            game_versions: vec![],
+        }],
+    )
+    .unwrap();
 
-    let read = locking::read_lockfile(&dir).unwrap().unwrap();
+    let read = locking::read_lockfile().unwrap().unwrap();
     assert_eq!(read.mods.len(), 1);
     assert_eq!(read.mods[0].slug, "second");
 
-    let _ = std::fs::remove_dir_all(&dir);
+    clear_test_lockfile();
 }
 
 // ── build_locked_mods ────────────────────────────────────────────────

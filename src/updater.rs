@@ -76,6 +76,9 @@ pub async fn run(
     //
     // Each task emits `(path, sha1, Option<IdentifiedMod>)` so we can
     // reconstruct unknown filenames after the stream completes.
+    if progress.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
     progress.start_phase("Identifying", hashed_count as u64);
 
     let identify_results: Vec<(PathBuf, String, Option<IdentifiedMod>)> =
@@ -165,7 +168,7 @@ pub async fn run(
         include: config.include.clone(),
         exclude: config.exclude.clone(),
         loader: config.loader.clone(),
-        game_version: config.game_version.clone(),
+        game_version: None, // Target sent to the API in Phase 5, not used as a pre-filter.
     };
 
     let before_filter = identified.len();
@@ -192,6 +195,9 @@ pub async fn run(
         .collect();
 
     // ── 5. Check for updates (parallel, 4 concurrent) ────────────────────
+    if progress.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
     let check_results: Vec<(ModOutcome, Option<UpdateCandidate>)> = stream::iter(&filtered)
         .map(|m| {
             async {
@@ -319,6 +325,9 @@ pub async fn run(
     let updates_available = candidates.len();
 
     // ── 6. Fetch project metadata (parallel, 4 concurrent) ───────────────
+    if progress.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
     let candidates: Vec<UpdateCandidate> = stream::iter(candidates)
         .map(|mut candidate| {
             async {
@@ -414,6 +423,8 @@ pub async fn run(
     table_outcomes.extend(unknown_outcomes.clone());
     table_outcomes.extend(filtered_outcomes.clone());
 
+    progress.report_outcomes(&table_outcomes);
+
     let headers: &[&str] = &["Status", "Mod", "Current", "Latest"];
     let rows = output::format_outcome_table(&table_outcomes);
     progress.print_table(headers, &rows);
@@ -463,6 +474,9 @@ pub async fn run(
     }
 
     // ── 10. Download updates (sequential) ────────────────────────────────
+    if progress.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
     let max_updates = config.max_updates.unwrap_or(usize::MAX);
     let to_download: Vec<&UpdateCandidate> =
         candidates.iter().take(max_updates).collect();
@@ -632,7 +646,6 @@ pub async fn run(
 
     let locked_mods = locking::build_locked_mods(&all_successful, &filtered);
     locking::write_lockfile(
-        &config.mods_dir,
         config.game_version.as_deref(),
         config.loader.as_deref(),
         &locked_mods,

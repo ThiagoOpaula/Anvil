@@ -3,7 +3,7 @@
   <p align="center">
     <b>Minecraft Mod Updater</b><br>
     Named after the block that repairs and upgrades.<br>
-    One binary. No launcher. No bloat.
+    CLI + GUI. One binary. No launcher. No bloat.
   </p>
 </p>
 
@@ -31,15 +31,50 @@ anvil
 anvil --game-version 1.21.4
 ```
 
+**New:** interactive prompts — just run `anvil` with no flags and pick your version/loader from a menu. Or use the GUI: `anvil-gui.exe` (4-tab desktop app).
+
 It auto-detects your mods folder. No config required.
+
+<br>
+
+## 🖥️ GUI
+
+For users who prefer a graphical interface, Anvil ships a desktop app (Windows / Linux / macOS):
+
+```
+┌──────────────────────────────────────────┐
+│  [Scan & Identify] [Updates] [Settings] [Rollback]  │
+├──────────────────────────────────────────┤
+│  Game version: [1.21.1 ▼]  Loader: [fabric ▼]      │
+│  [Check for Updates]  [Download 3 Update(s)]        │
+│  ─────────────────────────────────────────│
+│  ✓  sodium         0.5.11 → 0.6.1                 │
+│  ⬆  iris           1.7.5  → 1.8.2                 │
+│  ✗  lithium        0.13.0 → —                     │
+│  ...                                             │
+├──────────────────────────────────────────┤
+│  Idle                              Scan complete  │
+└──────────────────────────────────────────┘
+```
+
+- **Scan & Identify** — browse your mods folder, see every mod's loader and game version
+- **Updates** — pick a target Minecraft version and loader, check for updates, download with one click
+- **Settings** — configure backup, changelog, include/exclude filters, and save to `config.toml`
+- **Rollback** — restore mods from the last backup
+
+Download `anvil-gui.exe` from the [Releases](https://github.com/thiagoOpaula/anvil/releases) page, or build from source:
+
+```bash
+cargo run --features gui --bin anvil-gui
+```
 
 <br>
 
 ## 📦 Install
 
 ```bash
-# Download binary (Windows x64)
-# anvil.exe from the Releases page
+# Download binaries (Windows x64)
+# anvil.exe (CLI) + anvil-gui.exe (GUI) from the Releases page
 
 # Or install via Cargo
 cargo install --git https://github.com/thiagoOpaula/anvil
@@ -47,39 +82,44 @@ cargo install --git https://github.com/thiagoOpaula/anvil
 # Or build from source
 git clone https://github.com/thiagoOpaula/anvil
 cd anvil
-cargo build --release
+cargo build --release                    # CLI only
+cargo build --release --features gui     # Both binaries
 ```
 
 <br>
 
-## 🖥️ Usage
+## 📖 Usage
 
 ```bash
-# ── Preview ──────────────────────────────
+# ── Interactive (no flags) ──────────────────
+anvil                               # Pick version/loader from menus
+anvil list                          # List mods with interactive filters
+
+# ── Preview ──────────────────────────────────
 anvil --dry-run                     # Check without downloading
 anvil list                          # Table of all identified mods
 
-# ── Update ───────────────────────────────
+# ── Update ───────────────────────────────────
 anvil                               # Update everything
 anvil --changelog                   # Show what changed per mod
 anvil --max-updates 5               # Limit to 5 updates
 anvil -y                            # Skip confirmation prompt
 
-# ── Target ───────────────────────────────
+# ── Target ───────────────────────────────────
 anvil --game-version 1.21.4         # Lock to a Minecraft version
 anvil --loader fabric               # Force a specific loader
 anvil --game-version 1.21.4 --loader neoforge
 
-# ── Filter ───────────────────────────────
+# ── Filter ───────────────────────────────────
 anvil --include "sodium*"           # Only update Sodium family
 anvil --exclude "iris*"             # Skip shader mods
 anvil --include "/^(sodium|lithium)$/"  # Regex — exact slug match
 anvil --include "S*" --exclude "*-dev"  # Combine patterns
 
-# ── Rollback ─────────────────────────────
+# ── Rollback ─────────────────────────────────
 anvil rollback                      # Restore from last backup
 
-# ── Custom mods folder ───────────────────
+# ── Custom mods folder ───────────────────────
 anvil --mods-dir "D:\modpack\mods" --dry-run
 ```
 
@@ -103,7 +143,9 @@ anvil --mods-dir "D:\modpack\mods" --dry-run
 | 🎛️ **Config file** | Set defaults in `config.toml` |
 | 🛡️ **Deprecation warnings** | Alerts on archived/withdrawn Modrinth projects |
 | ⚠️ **Conflict detection** | Warns about incompatible dependency combos |
-| 📦 **Single binary** | ~7 MB — no Python, no JRE, no runtime |
+| 🖥️ **Desktop GUI** | egui-based 4-tab app — no terminal needed |
+| 🎮 **Interactive CLI** | Fuzzy-select menus for version and loader when no flags given |
+| 📦 **Single binary** | ~7 MB CLI, ~14 MB GUI — no Python, no JRE, no runtime |
 
 <br>
 
@@ -125,7 +167,7 @@ your mods folder
            │
            ▼
     sodium-0.6.1.jar  ← downloaded & SHA1-verified
-    anvil.lock        ← state snapshot written
+    lock.json         ← state snapshot (in cache dir)
 ```
 
 - **Hash-based** — no filename parsing, no guessing. SHA1 the file, ask Modrinth.
@@ -152,13 +194,13 @@ exclude = ["*-dev"]
 changelog = true
 ```
 
-CLI flags always win over config values.
+CLI flags always win over config values. The GUI Settings tab writes this file automatically.
 
 <br>
 
 ## 🧬 Tech
 
-**Language:** Rust · **Async:** Tokio · **HTTP:** reqwest (rustls) · **CLI:** clap · **Progress:** indicatif · **Logging:** tracing · **Size:** ~7 MB static binary
+**Language:** Rust · **Async:** Tokio · **HTTP:** reqwest (rustls) · **CLI:** clap · **TUI prompts:** dialoguer · **Progress:** indicatif · **GUI:** egui/eframe · **Logging:** tracing · **Size:** ~7 MB CLI, ~14 MB GUI static binary
 
 ## 📜 License
 

@@ -14,6 +14,8 @@ pub mod config;
 pub mod error;
 pub mod filters;
 pub mod interactive;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod locking;
 pub mod output;
 pub mod paths;
@@ -44,7 +46,7 @@ pub async fn run_list(
     // 1. Find JARs
     let jars = scanner::find_jars(&config.mods_dir)?;
     if jars.is_empty() {
-        println!("No JAR files found in {}.", config.mods_dir.display());
+        tracing::info!("No JAR files found in {}.", config.mods_dir.display());
         return Ok(());
     }
 
@@ -172,14 +174,13 @@ pub async fn run_list(
     }
 
     if rows.is_empty() {
-        println!("No mods matched the current filters.");
+        tracing::info!("No mods matched the current filters.");
     } else {
         progress.print_table(headers, &rows);
     }
 
     // 6. Print summary counts
-    println!();
-    println!(
+    tracing::info!(
         "Total JARs: {}  |  Identified: {}  |  Unknown: {}  |  Filtered out: {}  |  Shown: {}",
         jars.len(),
         before_filter,

@@ -1,9 +1,13 @@
 [package]
 name = "anvil"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Anvil — Minecraft mod updater. Keep your mods fresh."
 license = "MIT"
+
+[features]
+default = []
+gui = ["egui", "eframe", "egui_extras", "rfd", "crossbeam"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -28,5 +32,20 @@ console = "0.15"
 dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 url = "2"
 
+# GUI dependencies
+egui = { version = "0.31", optional = true }
+eframe = { version = "0.31", optional = true, default-features = false, features = [
+    "default_fonts",
+    "glow",
+] }
+egui_extras = { version = "0.31", optional = true }
+rfd = { version = "0.15", optional = true }
+crossbeam = { version = "0.8", optional = true }
+
 [build-dependencies]
 winres = "0.1"
+
+[[bin]]
+name = "anvil-gui"
+path = "src/bin/gui.rs"
+required-features = ["gui"]

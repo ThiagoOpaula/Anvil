@@ -1,25 +1,43 @@
 //! Lockfile read/write, state serialisation, and diffing between runs.
 //!
-//! The lockfile (`anvil.lock`) is a JSON document stored alongside the
-//! mods that records the resolved state after each successful run. It enables
-//! `--list` to show what changed between two runs.
+//! The lockfile (`lock.json`) is a JSON document stored in the cache
+//! directory that records the resolved state after each successful run.
+//! It enables `--list` to show what changed between two runs.
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::{Error, Result};
 use crate::types::{IdentifiedMod, LockFile, LockedMod, ModOutcome};
 
-/// Construct the lockfile path for a given mods directory.
-pub fn lockfile_path(mods_dir: &Path) -> PathBuf {
-    mods_dir.join("anvil.lock")
+/// Path to the lockfile in the cache directory.
+///
+/// In tests the path can be overridden via [`set_lockfile_override`] so each
+/// test gets an isolated file.
+pub fn lockfile_path() -> PathBuf {
+    {
+        if let Ok(guard) = TEST_LOCK_PATH.lock() {
+            if let Some(ref path) = *guard {
+                return path.clone();
+            }
+        }
+    }
+    crate::paths::cache_dir().join("lock.json")
+}
+
+static TEST_LOCK_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Override the lockfile path (for test isolation).
+#[doc(hidden)]
+pub fn set_lockfile_override(path: Option<PathBuf>) {
+    *TEST_LOCK_PATH.lock().expect("lock") = path;
 }
 
 /// Read the existing lockfile, returning `Ok(None)` when no lockfile exists
 /// yet (first run, or the file was manually deleted).
-pub fn read_lockfile(mods_dir: &Path) -> Result<Option<LockFile>> {
-    let path = lockfile_path(mods_dir);
+pub fn read_lockfile() -> Result<Option<LockFile>> {
+    let path = lockfile_path();
 
     match fs::read_to_string(&path) {
         Ok(content) => {
@@ -39,12 +57,16 @@ pub fn read_lockfile(mods_dir: &Path) -> Result<Option<LockFile>> {
 /// typically built by [`build_locked_mods`] from the outcomes and
 /// identified-mod list.
 pub fn write_lockfile(
-    mods_dir: &Path,
     target_game_version: Option<&str>,
     target_loader: Option<&str>,
     current_mods: &[LockedMod],
 ) -> Result<()> {
-    let path = lockfile_path(mods_dir);
+    let path = lockfile_path();
+
+    // Ensure the cache directory exists.
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
     let lockfile = LockFile {
         version: 1,
