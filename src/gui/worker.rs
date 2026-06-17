@@ -114,7 +114,6 @@ pub struct WorkerHandle {
     pub confirm_state: Arc<Mutex<Option<ConfirmState>>>,
     /// Set to `true` by the GUI to cancel the current operation.
     pub cancel_flag: Arc<std::sync::atomic::AtomicBool>,
-    worker_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WorkerHandle {
@@ -135,13 +134,13 @@ impl WorkerHandle {
 
 impl Drop for WorkerHandle {
     fn drop(&mut self) {
-        // Signal cancel so the worker stops quickly.
+        // Signal cancel so the worker stops at the next phase boundary.
         self.cancel_flag
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        // Drop the command sender so the worker's loop exits.
-        if let Some(handle) = self.worker_thread.take() {
-            let _ = handle.join();
-        }
+        // Don't join() — the worker thread might be blocked on a network
+        // call or confirm dialog. The thread exits when cmd_tx is dropped
+        // (channel disconnect → cmd_rx.recv() returns Err → loop exits).
+        // The OS reclaims the thread when the process terminates.
     }
 }
 
@@ -162,7 +161,7 @@ pub fn spawn_worker(shared_config: Arc<Mutex<ResolvedConfig>>) -> WorkerHandle {
     let worker_confirm = Arc::clone(&confirm_state);
     let worker_cancel = Arc::clone(&cancel_flag);
 
-    let handle = std::thread::spawn(move || {
+    let _handle = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -254,9 +253,19 @@ pub fn spawn_worker(shared_config: Arc<Mutex<ResolvedConfig>>) -> WorkerHandle {
                     GuiCommand::Rollback => {
                         match crate::backup::rollback(&config.mods_dir) {
                             Ok(count) => {
+                                let _ = event_tx.send(WorkerEvent::Log {
+                                    message: format!(
+                                        "Restored {count} mod(s) from backup. \
+                                         Your previous files were saved to a \
+                                         safety backup in the mods folder.",
+                                    ),
+                                });
                                 let _ = event_tx.send(WorkerEvent::RollbackComplete { count });
                             }
                             Err(e) => {
+                                let _ = event_tx.send(WorkerEvent::Log {
+                                    message: format!("Rollback error: {}", e),
+                                });
                                 let _ =
                                     event_tx.send(WorkerEvent::Error(format!("rollback: {}", e)));
                             }
@@ -273,7 +282,6 @@ pub fn spawn_worker(shared_config: Arc<Mutex<ResolvedConfig>>) -> WorkerHandle {
         event_rx,
         confirm_state,
         cancel_flag,
-        worker_thread: Some(handle),
     }
 }
 

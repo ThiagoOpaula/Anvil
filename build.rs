@@ -1,6 +1,6 @@
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
-        if let Err(e) = winres::WindowsResource::new()
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows"
+        && let Err(e) = winres::WindowsResource::new()
             .set_manifest(
                 r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
 <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
@@ -18,5 +18,4 @@ fn main() {
             // In that case, print a warning but don't stop the build.
             println!("cargo:warning=failed to embed Windows manifest: {}", e);
         }
-    }
 }

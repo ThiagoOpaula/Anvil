@@ -19,6 +19,12 @@ pub struct ConsoleProgress {
     term: Term,
 }
 
+impl Default for ConsoleProgress {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConsoleProgress {
     /// Create a new progress renderer for the current terminal.
     pub fn new() -> Self {
@@ -110,7 +116,7 @@ impl ProgressRenderer for ConsoleProgress {
         };
 
         // Header
-        let header_strs: Vec<&str> = headers.iter().copied().collect();
+        let header_strs: Vec<&str> = headers.to_vec();
         println!("{}", format_row(&header_strs));
 
         // Separator line

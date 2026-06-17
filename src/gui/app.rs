@@ -108,6 +108,10 @@ pub struct AnvilApp {
     settings_changelog: bool,
     settings_include: String,
     settings_exclude: String,
+
+    // Browse button deferred — native dialog opens between frames
+    // so it doesn't conflict with egui's render context.
+    browse_pending: bool,
 }
 
 impl AnvilApp {
@@ -165,6 +169,7 @@ impl AnvilApp {
             settings_changelog: resolved.changelog,
             settings_include: sinc,
             settings_exclude: sexc,
+            browse_pending: false,
         }
     }
 
@@ -325,6 +330,16 @@ impl eframe::App for AnvilApp {
         // Drain worker events (non-blocking).
         self.process_events();
 
+        // Open native folder dialog between frames (outside any ui scope)
+        // so it doesn't conflict with egui's render context.
+        if self.browse_pending {
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                self.mods_dir_input = path.display().to_string();
+            }
+            self.browse_pending = false;
+            ctx.request_repaint();
+        }
+
         // ── Top tab bar ──────────────────────────────────────────────────
         egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -431,10 +446,8 @@ impl AnvilApp {
         ui.horizontal(|ui| {
             ui.label("Mods directory:");
             ui.text_edit_singleline(&mut self.mods_dir_input);
-            if ui.button("Browse...").clicked()
-                && let Some(path) = rfd::FileDialog::new().pick_folder()
-            {
-                self.mods_dir_input = path.display().to_string();
+            if ui.button("Browse...").clicked() {
+                self.browse_pending = true;
             }
         });
 
@@ -737,10 +750,8 @@ impl AnvilApp {
         ui.horizontal(|ui| {
             ui.label("Mods directory:");
             ui.text_edit_singleline(&mut self.mods_dir_input);
-            if ui.button("Browse...").clicked()
-                && let Some(path) = rfd::FileDialog::new().pick_folder()
-            {
-                self.mods_dir_input = path.display().to_string();
+            if ui.button("Browse...").clicked() {
+                self.browse_pending = true;
             }
         });
 
@@ -816,6 +827,22 @@ impl AnvilApp {
     fn render_rollback_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Rollback");
 
+        ui.label(
+            "This restores all mods from a previous backup. Your current \
+             JAR files are saved to a safety backup first — nothing is lost.",
+        );
+
+        // Show rollback result prominently.
+        if let Some(msg) = self.log_messages.iter().find(|e| e.message.starts_with("Restored"))
+        {
+            ui.colored_label(egui::Color32::GREEN, format!("✓ {}", msg.message));
+            ui.label("Your mods have been restored. Switch to the Scan tab to verify.");
+        }
+        if let Some(msg) = self.log_messages.iter().find(|e| e.message.starts_with("Rollback error"))
+        {
+            ui.colored_label(egui::Color32::RED, format!("✗ {}", msg.message));
+        }
+
         let mods_dir = self
             .config
             .lock()
@@ -826,7 +853,22 @@ impl AnvilApp {
 
         match &backups {
             Ok(backup_dir) => {
-                ui.label(format!("Latest backup: {}", backup_dir.display()));
+                let file_count = std::fs::read_dir(backup_dir)
+                    .map(|d| {
+                        d.filter(|e| {
+                            e.as_ref()
+                                .map(|x| x.path().is_file())
+                                .unwrap_or(false)
+                        })
+                        .count()
+                    })
+                    .unwrap_or(0);
+
+                ui.label(format!(
+                    "Latest backup: {} ({} file(s))",
+                    backup_dir.display(),
+                    file_count
+                ));
                 if ui
                     .add_enabled(
                         !self.worker_busy,
@@ -840,9 +882,15 @@ impl AnvilApp {
             }
             Err(e) => {
                 if matches!(e, crate::error::Error::NoBackups) {
-                    ui.label("No backups found in the mods directory.");
+                    ui.label(
+                        "No backups found in the mods directory. \
+                         Run an update first to create one.",
+                    );
                 } else {
-                    ui.label(format!("Error scanning for backups: {}", e));
+                    ui.label(format!(
+                        "Error scanning for backups: {}",
+                        e
+                    ));
                 }
             }
         }

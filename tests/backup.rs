@@ -6,6 +6,8 @@ use std::fs;
 use anvil::backup::*;
 use anvil::error::Error;
 
+const TEST_VERSION: &str = "1.21";
+
 #[test]
 fn no_backups_in_empty_dir() {
     let dir = unique_temp_dir("backup-no-backups");
@@ -24,9 +26,12 @@ fn finds_latest_backup() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    let older = dir.join("backup_20240101_120000");
-    let newer = dir.join("backup_20240102_120000");
+    let older = dir.join("backup_01-01-2024_mc1.21");
+    let newer = dir.join("backup_02-01-2024_mc1.21");
     fs::create_dir(&older).unwrap();
+    // Touch a file inside older so it gets an earlier mtime.
+    fs::write(older.join("dummy"), b"").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
     fs::create_dir(&newer).unwrap();
 
     let found = find_latest_backup(&dir).unwrap();
@@ -41,7 +46,7 @@ fn create_backup_dir_creates_directory() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    let backup = create_backup_dir(&dir).unwrap();
+    let backup = create_backup_dir(&dir, TEST_VERSION).unwrap();
     assert!(backup.exists());
     assert!(backup.is_dir());
     assert!(backup
@@ -62,7 +67,7 @@ fn move_to_backup_moves_not_copies() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    let backup_dir = dir.join("backup_20240101_120000");
+    let backup_dir = dir.join("backup_01-01-2024_mc1.21");
     fs::create_dir(&backup_dir).unwrap();
 
     let jar_path = dir.join("test-mod.jar");
@@ -88,7 +93,7 @@ fn move_to_backup_multiple_files() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    let backup_dir = dir.join("backup_20240101_120000");
+    let backup_dir = dir.join("backup_01-01-2024_mc1.21");
     fs::create_dir(&backup_dir).unwrap();
 
     let jars: Vec<_> = (0..5)
@@ -125,7 +130,7 @@ fn move_to_backup_nonexistent_file_errors() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    let backup_dir = dir.join("backup_20240101_120000");
+    let backup_dir = dir.join("backup_01-01-2024_mc1.21");
     fs::create_dir(&backup_dir).unwrap();
 
     let jar_path = dir.join("does-not-exist.jar");
@@ -171,7 +176,7 @@ fn rollback_full_round_trip() {
     fs::write(&jar3, b"mod-c-content").unwrap();
 
     // Create backup and move files into it
-    let backup = create_backup_dir(&dir).unwrap();
+    let backup = create_backup_dir(&dir, TEST_VERSION).unwrap();
     move_to_backup(&jar1, &backup).unwrap();
     move_to_backup(&jar2, &backup).unwrap();
     move_to_backup(&jar3, &backup).unwrap();
@@ -208,16 +213,33 @@ fn rollback_overwrites_existing_files() {
     let jar = dir.join("mod.jar");
     fs::write(&jar, b"original").unwrap();
 
-    let backup = create_backup_dir(&dir).unwrap();
+    let backup = create_backup_dir(&dir, TEST_VERSION).unwrap();
     move_to_backup(&jar, &backup).unwrap();
 
     // Create a "newer" file at the same path (simulates downloaded update)
     fs::write(&jar, b"newer version").unwrap();
 
-    // Rollback should overwrite the newer file with the backup
+    // Rollback should first save the "newer" file to a safety backup,
+    // then restore the original from the backup.
     let count = rollback(&dir).unwrap();
     assert_eq!(count, 1);
     assert_eq!(fs::read_to_string(&jar).unwrap(), "original");
+
+    // Verify a safety backup was created containing the newer file.
+    let safety_dirs: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .map(|n| n.starts_with("backup_before_rollback_"))
+                .unwrap_or(false)
+        })
+        .collect();
+    assert_eq!(safety_dirs.len(), 1);
+    let safety_jar = safety_dirs[0].path().join("mod.jar");
+    assert!(safety_jar.exists());
+    assert_eq!(fs::read_to_string(&safety_jar).unwrap(), "newer version");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -240,7 +262,7 @@ fn rollback_empty_backup_returns_zero() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    let backup = create_backup_dir(&dir).unwrap();
+    let backup = create_backup_dir(&dir, TEST_VERSION).unwrap();
     assert!(backup.exists());
 
     let count = rollback(&dir).unwrap();
@@ -274,11 +296,13 @@ fn find_latest_backup_multiple_returns_newest() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    let b1 = dir.join("backup_20240101_120000");
-    let b2 = dir.join("backup_20240102_120000");
-    let b3 = dir.join("backup_20240103_120000");
+    let b1 = dir.join("backup_01-01-2024_mc1.21");
+    let b2 = dir.join("backup_02-01-2024_mc1.21");
+    let b3 = dir.join("backup_03-01-2024_mc1.21");
     fs::create_dir(&b1).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
     fs::create_dir(&b2).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
     fs::create_dir(&b3).unwrap();
 
     let found = find_latest_backup(&dir).unwrap();
@@ -287,7 +311,7 @@ fn find_latest_backup_multiple_returns_newest() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-// ── create_backup_dir timestamp format ──────────────────────────────
+// ── create_backup_dir format ─────────────────────────────────────────
 
 #[test]
 fn create_backup_dir_timestamp_format() {
@@ -295,20 +319,40 @@ fn create_backup_dir_timestamp_format() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    let backup = create_backup_dir(&dir).unwrap();
+    let backup = create_backup_dir(&dir, "1.21.1").unwrap();
     let name = backup.file_name().unwrap().to_str().unwrap();
 
-    // Format: backup_YYYYMMDD_HHMMSS
+    // Format: backup_DD-MM-YYYY_mcVERSION
     assert!(name.starts_with("backup_"));
     let after = &name["backup_".len()..];
-    assert_eq!(after.len(), 15); // 8 date + 1 underscore + 6 time = 15
-    assert_eq!(after.chars().nth(8), Some('_'));
+    // Should match: DD-MM-YYYY_mc1.21.1
+    // Verify date chars: positions 0-1 = day, 2 = dash, 3-4 = month, 5 = dash, 6-9 = year
+    assert_eq!(after.chars().nth(2), Some('-'));
+    assert_eq!(after.chars().nth(5), Some('-'));
+    assert_eq!(after.chars().nth(10), Some('_'));
+    assert!(after.chars().nth(0).unwrap().is_ascii_digit());
+    assert!(after.chars().nth(1).unwrap().is_ascii_digit());
+    assert!(after.chars().nth(3).unwrap().is_ascii_digit());
+    assert!(after.chars().nth(4).unwrap().is_ascii_digit());
+    assert!(after.chars().nth(6).unwrap().is_ascii_digit());
+    assert!(after.chars().nth(7).unwrap().is_ascii_digit());
+    assert!(after.chars().nth(8).unwrap().is_ascii_digit());
+    assert!(after.chars().nth(9).unwrap().is_ascii_digit());
+    // Version suffix
+    assert_eq!(&after[11..], "mc1.21.1");
 
-    // Verify the date/time parts are all digits
-    let date_part = &after[..8];
-    let time_part = &after[9..];
-    assert!(date_part.chars().all(|c| c.is_ascii_digit()));
-    assert!(time_part.chars().all(|c| c.is_ascii_digit()));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn create_backup_dir_uses_auto_when_version_empty() {
+    let dir = unique_temp_dir("backup-auto");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    let backup = create_backup_dir(&dir, "").unwrap();
+    let name = backup.file_name().unwrap().to_str().unwrap();
+    assert!(name.ends_with("_mcauto"));
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -319,7 +363,7 @@ fn create_backup_dir_is_empty() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    let backup = create_backup_dir(&dir).unwrap();
+    let backup = create_backup_dir(&dir, TEST_VERSION).unwrap();
     let entries: Vec<_> = fs::read_dir(&backup).unwrap().collect();
     assert!(entries.is_empty());
 

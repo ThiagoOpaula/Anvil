@@ -17,11 +17,10 @@ use crate::types::{IdentifiedMod, LockFile, LockedMod, ModOutcome};
 /// test gets an isolated file.
 pub fn lockfile_path() -> PathBuf {
     {
-        if let Ok(guard) = TEST_LOCK_PATH.lock() {
-            if let Some(ref path) = *guard {
+        if let Ok(guard) = TEST_LOCK_PATH.lock()
+            && let Some(ref path) = *guard {
                 return path.clone();
             }
-        }
     }
     crate::paths::cache_dir().join("lock.json")
 }
@@ -199,14 +198,13 @@ pub fn diff_lockfile(old: &LockFile, new: &LockFile) -> Vec<String> {
 
     // Updated: present in both but version changed.
     for (slug, new_m) in &new_by_slug {
-        if let Some(old_m) = old_by_slug.get(slug) {
-            if old_m.version_number != new_m.version_number {
+        if let Some(old_m) = old_by_slug.get(slug)
+            && old_m.version_number != new_m.version_number {
                 lines.push(format!(
                     "Updated: {} {} -> {}",
                     slug, old_m.version_number, new_m.version_number
                 ));
             }
-        }
     }
 
     lines

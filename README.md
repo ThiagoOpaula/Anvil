@@ -42,19 +42,19 @@ It auto-detects your mods folder. No config required.
 For users who prefer a graphical interface, Anvil ships a desktop app (Windows / Linux / macOS):
 
 ```
-┌──────────────────────────────────────────┐
+┌─────────────────────────────────────────────────────┐
 │  [Scan & Identify] [Updates] [Settings] [Rollback]  │
-├──────────────────────────────────────────┤
-│  Game version: [1.21.1 ▼]  Loader: [fabric ▼]      │
+├─────────────────────────────────────────────────────┤
+│  Game version: [1.21.1 ▼]  Loader: [fabric ▼]       │
 │  [Check for Updates]  [Download 3 Update(s)]        │
-│  ─────────────────────────────────────────│
-│  ✓  sodium         0.5.11 → 0.6.1                 │
-│  ⬆  iris           1.7.5  → 1.8.2                 │
-│  ✗  lithium        0.13.0 → —                     │
-│  ...                                             │
-├──────────────────────────────────────────┤
-│  Idle                              Scan complete  │
-└──────────────────────────────────────────┘
+│  ───────────────────────────────────────────────────│
+│  ✓  sodium         0.5.11 → 0.6.1                   │
+│  ⬆  iris           1.7.5  → 1.8.2                   │
+│  ✗  lithium        0.13.0 → —                       │
+│  ...                                                │
+├─────────────────────────────────────────────────────┤
+│  Idle                              Scan complete    │
+└─────────────────────────────────────────────────────┘
 ```
 
 - **Scan & Identify** — browse your mods folder, see every mod's loader and game version
@@ -160,14 +160,17 @@ your mods folder
     └── ...
            │
            ▼
-    ┌─────────────────────────┐
-    │  backup_20250531_120000/ │  ← old JARs moved here
-    │  └── sodium-0.5.11.jar  │
-    └─────────────────────────┘
+    ┌──────────────────────────────────┐
+    │  backup_17-06-2026_mc1.21.1/    │  ← old JARs moved here
+    │  └── sodium-0.5.11.jar          │
+    └──────────────────────────────────┘
            │
            ▼
     sodium-0.6.1.jar  ← downloaded & SHA1-verified
     lock.json         ← state snapshot (in cache dir)
+
+    Rollback: current files saved to backup_before_rollback_*
+    before restoring — nothing is lost.
 ```
 
 - **Hash-based** — no filename parsing, no guessing. SHA1 the file, ask Modrinth.

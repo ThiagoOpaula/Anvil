@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 const BASE_URL: &str = "https://api.modrinth.com/v2";
-const USER_AGENT: &str = "anvil/0.3.0 (thiag@github)";
+const USER_AGENT: &str = "thiagoOpaula/anvil/0.3.1 (thiag@github)";
 const RATE_LIMIT_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_RETRIES: usize = 3;
 
@@ -129,7 +129,7 @@ impl ApiClient for ModrinthApi {
                 let version: ModVersion = response.json().await.map_err(Error::Http)?;
                 Ok(Some(version))
             }
-            Err(Error::Api { status, .. }) if status == 404 => Ok(None),
+            Err(Error::Api { status: 404, .. }) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -156,7 +156,7 @@ impl ApiClient for ModrinthApi {
                 let version: ModVersion = response.json().await.map_err(Error::Http)?;
                 Ok(Some(version))
             }
-            Err(Error::Api { status, .. }) if status == 404 => Ok(None),
+            Err(Error::Api { status: 404, .. }) => Ok(None),
             Err(e) => Err(e),
         }
     }

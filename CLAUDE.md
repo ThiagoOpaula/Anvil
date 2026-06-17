@@ -55,7 +55,7 @@ cargo clippy --features gui
 | `scanner.rs` | JAR discovery, SHA1 hashing, batch identification |
 | `filters.rs` | Include/exclude slug/name filtering, loader + game-version filters |
 | `updater.rs` | 12-phase update pipeline (the core orchestrator) |
-| `backup.rs` | Timestamped backup dirs, atomic moves, rollback |
+| `backup.rs` | Backup dirs (`backup_DD-MM-YYYY_mc{VERSION}`), atomic moves, rollback with safety backup |
 | `locking.rs` | Lockfile (`lock.json`) in cache dir, state diffing between runs |
 | `output.rs` | indicatif progress bars, terminal-width tables, changelogs |
 | `interactive.rs` | dialoguer FuzzySelect/Select for game version + loader (CLI TTY only) |

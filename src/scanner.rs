@@ -43,7 +43,7 @@ pub fn find_jars(dir: &Path) -> crate::Result<Vec<PathBuf>> {
 
         let is_jar = path
             .extension()
-            .map(|ext| ext.to_ascii_lowercase() == "jar")
+            .map(|ext| ext.eq_ignore_ascii_case("jar"))
             .unwrap_or(false);
 
         if is_jar {

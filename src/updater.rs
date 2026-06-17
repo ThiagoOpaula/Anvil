@@ -355,20 +355,19 @@ pub async fn run(
                 };
 
                 // Warn if the project has a problematic status.
-                if let Some(ref p) = project {
-                    if p.status.is_problematic() {
+                if let Some(ref p) = project
+                    && p.status.is_problematic() {
                         tracing::warn!(
                             slug = %p.slug,
                             status = ?p.status,
                             "mod has problematic status — consider removing"
                         );
                     }
-                }
 
                 // Check dependencies for incompatibilities with installed mods.
                 for dep in &candidate.latest_version.dependencies {
-                    if dep.dependency_type == DependencyType::Incompatible {
-                        if let Some(ref dep_project_id) = dep.project_id {
+                    if dep.dependency_type == DependencyType::Incompatible
+                        && let Some(ref dep_project_id) = dep.project_id {
                             let is_installed = filtered
                                 .iter()
                                 .any(|m| m.current_version.project_id == *dep_project_id);
@@ -380,7 +379,6 @@ pub async fn run(
                                 );
                             }
                         }
-                    }
                 }
 
                 candidate.project = project;
@@ -505,7 +503,8 @@ pub async fn run(
 
         // Create backup directory on first download.
         if config.backup && backup_dir.is_none() {
-            backup_dir = Some(backup::create_backup_dir(&config.mods_dir)?);
+            let gv = config.game_version.as_deref().unwrap_or("");
+            backup_dir = Some(backup::create_backup_dir(&config.mods_dir, gv)?);
         }
 
         // Move (or delete) the old JAR.
@@ -514,15 +513,14 @@ pub async fn run(
         } else {
             // No backup — just remove the old file so we don't leave
             // stale JARs around when filenames change.
-            if candidate.identified.path.exists() {
-                if let Err(e) = std::fs::remove_file(&candidate.identified.path) {
+            if candidate.identified.path.exists()
+                && let Err(e) = std::fs::remove_file(&candidate.identified.path) {
                     tracing::warn!(
                         path = %candidate.identified.path.display(),
                         error = %e,
                         "failed to remove old JAR (backup disabled)"
                     );
                 }
-            }
         }
 
         // Download the new file.
@@ -568,17 +566,15 @@ pub async fn run(
                 });
 
                 // Print changelog if requested.
-                if config.changelog {
-                    if let Some(ref changelog) = candidate.latest_version.changelog {
-                        if !changelog.is_empty() {
+                if config.changelog
+                    && let Some(ref changelog) = candidate.latest_version.changelog
+                        && !changelog.is_empty() {
                             progress.print_changelog(
                                 &slug,
                                 &candidate.latest_version.version_number,
                                 changelog,
                             );
                         }
-                    }
-                }
             }
             Ok(actual_sha1) => {
                 // SHA1 mismatch — corrupted download.

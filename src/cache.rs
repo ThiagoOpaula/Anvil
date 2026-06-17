@@ -13,6 +13,12 @@ pub struct ApiCache {
     root: PathBuf,
 }
 
+impl Default for ApiCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ApiCache {
     /// Create a new cache using the platform-appropriate cache directory.
     pub fn new() -> Self {
