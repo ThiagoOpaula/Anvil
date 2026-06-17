@@ -2,9 +2,18 @@
   <h1 align="center">⚒ anvil</h1>
   <p align="center">
     <b>Minecraft Mod Updater</b><br>
-    Named after the block that repairs and upgrades.<br>
+    In Minecraft, anvil repairs and upgrades your gear. Anvil does the same for your mods.<br>
     CLI + GUI. One binary. No launcher. No bloat.
   </p>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/release-v0.3.1-blue?style=flat-square" alt="Latest Release">
+  <img src="https://img.shields.io/badge/Rust-%23000000?style=flat-square&logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
+  <img src="https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux">
+  <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS">
+  <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue?style=flat-square" alt="License">
 </p>
 
 <p align="center">
@@ -34,6 +43,16 @@ anvil --game-version 1.21.4
 **New:** interactive prompts — just run `anvil` with no flags and pick your version/loader from a menu. Or use the GUI: `anvil-gui.exe` (4-tab desktop app).
 
 It auto-detects your mods folder. No config required.
+
+<br>
+
+## 🤔 Why Anvil?
+
+Updating mods manually is tedious — search Modrinth, check loader and game-version compatibility, download JARs, drag them into the folder, pray nothing broke.
+
+Anvil automates all of that. Point it at your mods folder and it scans every JAR by its content hash, queries the Modrinth API for updates, and downloads the right version — matching your exact Minecraft version and mod loader. No launcher required. No lock-in. No bloat.
+
+Before applying updates, Anvil creates a timestamped backup and verifies every download by SHA1. If something goes wrong, one command restores the previous state.
 
 <br>
 
@@ -70,6 +89,26 @@ cargo run --features gui --bin anvil-gui
 
 <br>
 
+## Demo
+
+*Animated demo GIF showing the CLI workflow — coming soon.*
+
+[GIF_PLACEHOLDER]
+
+## GUI Screenshots
+
+*Screenshots of the desktop GUI — coming soon.*
+
+[SCREENSHOT_PLACEHOLDER_SCAN]
+
+[SCREENSHOT_PLACEHOLDER_UPDATES]
+
+[SCREENSHOT_PLACEHOLDER_SETTINGS]
+
+[SCREENSHOT_PLACEHOLDER_ROLLBACK]
+
+<br>
+
 ## 📦 Install
 
 ```bash
@@ -98,7 +137,27 @@ anvil list                          # List mods with interactive filters
 # ── Preview ──────────────────────────────────
 anvil --dry-run                     # Check without downloading
 anvil list                          # Table of all identified mods
+```
 
+```text
+$ anvil --dry-run
+
+Found 47 mods
+
+ ✓ Sodium         0.5.11  →  0.6.1
+ ✓ Iris           1.7.5   →  1.8.2
+ ✓ Lithium        Up-to-date
+ ✓ Fabric API     0.102.0 →  0.105.1
+ ✓ JEI            18.3.0  →  18.4.5
+ ✓ Jade           14.0.2  →  14.1.0
+ ✓ EMI            1.1.10  →  1.1.13
+ ✓ Create         0.5.1   →  0.5.1  (same — latest)
+ ✗ mystery-mod    Not on Modrinth
+
+3 updates available
+```
+
+```bash
 # ── Update ───────────────────────────────────
 anvil                               # Update everything
 anvil --changelog                   # Show what changed per mod
@@ -125,26 +184,50 @@ anvil --mods-dir "D:\modpack\mods" --dry-run
 
 <br>
 
+## 🛡️ Safety
+
+Anvil is designed with safety as a core principle:
+
+- **📦 Auto backup** — before applying updates, Anvil moves the current JARs into a timestamped backup directory (`backup_DD-MM-YYYY_mc{version}`)
+- **🔐 SHA1 verification** — every downloaded file is hash-checked against Modrinth's records. Corrupted or tampered downloads are rejected
+- **♻️ Rollback** — `anvil rollback` restores mods from the last backup. If a rollback itself goes wrong, Anvil creates a *safety backup* of the current state before restoring
+- **👁️ Dry-run mode** — `--dry-run` shows what would happen without downloading or modifying any files. Preview before you commit
+- **📊 Lockfile** — a `lock.json` tracks the state between runs, so you can always see what changed
+
+<br>
+
 ## ✨ Features
+
+### Core Features
 
 | Feature | Description |
 |---------|-------------|
-| 🔍 **SHA1 identification** | Finds mods by content hash — rename-safe |
-| ⚡ **Parallel API** | 4 concurrent requests, cache-before-network |
+| 🔍 **SHA1 identification** | Finds mods by content hash — rename-safe, no filename guessing |
 | 📦 **Auto backup** | Timestamped snapshots before every update |
 | 🔄 **Rollback** | `anvil rollback` restores everything |
+| 📝 **Changelogs** | `--changelog` reads what's new before updating |
 | 🎯 **Smart filters** | Include/exclude by slug, wildcard, or regex |
 | 🔐 **SHA1 verification** | Every download hash-checked — no corruption |
+| ⚠️ **Conflict detection** | Warns about incompatible dependency combos |
+| 🛡️ **Deprecation warnings** | Alerts on archived/withdrawn Modrinth projects |
+
+### Power User Features
+
+| Feature | Description |
+|---------|-------------|
+| 🎛️ **Config file** | Set defaults in `config.toml` |
+| 📊 **Lockfile** | Tracks state across runs — see what changed |
 | 💾 **Disk cache** | API results cached — second run is instant |
 | 📋 **Mod listing** | `anvil list` — version, loader, game version per mod |
-| 📝 **Changelogs** | `--changelog` reads what's new before updating |
-| 📊 **Lockfile** | Tracks state across runs — see what changed |
-| 🌍 **Cross-platform** | Windows / Linux / macOS — auto-detects mods folder |
-| 🎛️ **Config file** | Set defaults in `config.toml` |
-| 🛡️ **Deprecation warnings** | Alerts on archived/withdrawn Modrinth projects |
-| ⚠️ **Conflict detection** | Warns about incompatible dependency combos |
+
+### User Experience
+
+| Feature | Description |
+|---------|-------------|
+| ⚡ **Parallel API** | 4 concurrent requests, cache-before-network |
 | 🖥️ **Desktop GUI** | egui-based 4-tab app — no terminal needed |
 | 🎮 **Interactive CLI** | Fuzzy-select menus for version and loader when no flags given |
+| 🌍 **Cross-platform** | Windows / Linux / macOS — auto-detects mods folder |
 | 📦 **Single binary** | ~7 MB CLI, ~14 MB GUI — no Python, no JRE, no runtime |
 
 <br>
@@ -207,34 +290,15 @@ CLI flags always win over config values. The GUI Settings tab writes this file a
 
 ## 🗺️ Roadmap
 
-### Quick wins
-- 🎨 **Dark mode toggle** — switch between light and dark themes
-- 🔗 **Modrinth links** — click a mod to open its project page
-- 📤 **Export mod list** — save scan results as CSV / Markdown / JSON
-- 🔔 **App update check** — notify when a new version of Anvil is available 
--  ⬇️ **Update check on startup** — on startup, hit the GitHub releases API and show "v0.4.0 available!" with a download link
-- ⌨️ **Keyboard shortcuts** — `Ctrl+R` scan, `Ctrl+U` check updates
-- 🪟 **Remember window size** — persist window geometry across sessions
+| Priority | Feature |
+|----------|---------|
+| 🌳 | Dependency tree — visualize which mods depend on which |
+| 📦 | Modpack support — import and update `.mrpack` files |
+| 🔄 | Self-updater — Anvil updates itself |
+| 🔎 | Mod discovery — browse Modrinth from inside the app |
+| 🎨 | Shaders + resource pack updates |
 
-### Medium
-- 🌳 **Dependency tree** — visualize which mods depend on which
-- 📦 **Modpack support** — import and update `.mrpack` files
-- 👥 **Profile system** — switch between multiple mods folders
-- ⏰ **Scheduled checks** — opt-in daily update notifications
-- 🫱🏽‍🫲🏾 **Share mod list** — export a list of your mods to share with friends
-- 🖱️ **Drag & drop JARs** — drop a file to identify it instantly
-
-### Big features
-- 🔄 **Self-updater** — Anvil updates itself
-- 🔎 **Mod discovery** — browse Modrinth from inside the app, install in one click
-- 🎨 **Shaders + resource packs** — scan and update beyond just mods
-- 👁️ **CLI daemon mode** — `anvil watch` auto-identifies new JARs
-- 🐧 **Linux/macOS packages** — `.deb`, `.rpm`, Homebrew, AUR
-
-### Non-code
-- 🌐 **Landing page** — simple website with downloads and screenshots
-- 🎬 **YouTube demo** — 2-minute walkthrough of the GUI
-- 📋 **Modrinth project** — list Anvil as a tool on Modrinth
+See the [full roadmap](ROADMAP.md) for details.
 
 <br>
 
@@ -246,6 +310,4 @@ CLI flags always win over config values. The GUI Settings tab writes this file a
 
 <p align="center">
   <sub>Built with Rust. Powered by <a href="https://modrinth.com">Modrinth</a>. ⚒</sub>
-  <br>
-  <sub>Made using <a href="https://claude.ai/code">Claude Code</a> + DeepSeek V4 Pro</sub>
 </p>
