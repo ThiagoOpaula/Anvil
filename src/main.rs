@@ -40,12 +40,21 @@ async fn main() -> anyhow::Result<()> {
 
     // ── 3. Load config file ──────────────────────────────────────────────
     let config_path = paths::config_dir().join("config.toml");
-    let resolved = config::resolve(&cli, Some(&config_path))?;
+    let mut resolved = config::resolve(&cli, Some(&config_path))?;
 
     // ── 4. Build API client, cache, and progress renderer ────────────────
     let api = ModrinthApi::new()?;
     let cache = ApiCache::new();
     let progress = output::ConsoleProgress::new();
+
+    // ── 4b. Interactive version/loader selection ─────────────────────────
+    // Only prompt for update (default) and list subcommands, not rollback.
+    let needs_prompts = !matches!(cli.command, Some(Command::Rollback));
+    if needs_prompts
+        && let Err(e) = anvil::interactive::prompt_if_needed(&mut resolved, &api).await
+    {
+        tracing::warn!("interactive prompt error: {} — continuing", e);
+    }
 
     // ── 5. Dispatch on subcommand ────────────────────────────────────────
     match cli.command {
@@ -56,10 +65,12 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Err(Error::NoBackups) => {
                     eprintln!("No backups found in {}.", resolved.mods_dir.display());
+                    anvil::interactive::pause_before_exit();
                     std::process::exit(1);
                 }
                 Err(e) => {
                     eprintln!("Rollback failed: {}", e);
+                    anvil::interactive::pause_before_exit();
                     std::process::exit(1);
                 }
             }
@@ -79,11 +90,13 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     tracing::error!("update failed: {}", e);
+                    anvil::interactive::pause_before_exit();
                     std::process::exit(1);
                 }
             }
         }
     }
 
+    anvil::interactive::pause_before_exit();
     Ok(())
 }

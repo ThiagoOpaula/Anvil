@@ -2,7 +2,7 @@
 //! streaming downloads with SHA1 verification.
 
 use crate::error::{Error, Result};
-use crate::types::{ApiClient, ModVersion, Project};
+use crate::types::{ApiClient, GameVersionTag, LoaderTag, ModVersion, Project};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::Value;
@@ -167,6 +167,33 @@ impl ApiClient for ModrinthApi {
         let response = self.request(reqwest::Method::GET, &path, None).await?;
         let project: Project = response.json().await.map_err(Error::Http)?;
         Ok(project)
+    }
+
+    /// `GET /v2/tag/game_version` — fetch all game versions (release only, newest first).
+    async fn get_game_versions(&self) -> Result<Vec<String>> {
+        let path = "/tag/game_version";
+        let response = self.request(reqwest::Method::GET, path, None).await?;
+        let tags: Vec<GameVersionTag> = response.json().await.map_err(Error::Http)?;
+        let mut versions: Vec<String> = tags
+            .into_iter()
+            .filter(|t| t.version_type == "release")
+            .map(|t| t.version)
+            .collect();
+        versions.dedup();
+        Ok(versions)
+    }
+
+    /// `GET /v2/tag/loader` — fetch all loaders (filtered to "mod" project type).
+    async fn get_loaders(&self) -> Result<Vec<String>> {
+        let path = "/tag/loader";
+        let response = self.request(reqwest::Method::GET, path, None).await?;
+        let tags: Vec<LoaderTag> = response.json().await.map_err(Error::Http)?;
+        let loaders: Vec<String> = tags
+            .into_iter()
+            .filter(|t| t.supported_project_types.iter().any(|pt| pt == "mod"))
+            .map(|t| t.name)
+            .collect();
+        Ok(loaders)
     }
 
     /// Streaming download with progress reporting and on-the-fly SHA1 hashing.

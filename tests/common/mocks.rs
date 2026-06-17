@@ -35,6 +35,10 @@ pub struct MockApi {
     pub download_sha1_override: Mutex<Option<String>>,
     /// When true, `download_file` returns `Err(Error::Download { ... })`.
     pub download_should_fail: Mutex<bool>,
+    /// Game versions returned by `get_game_versions`.
+    pub game_versions: Mutex<Vec<String>>,
+    /// Loaders returned by `get_loaders`.
+    pub loaders: Mutex<Vec<String>>,
 
     // Call tracking
     /// Every SHA1 passed to `get_version_from_hash`.
@@ -57,6 +61,12 @@ impl MockApi {
             download_content: Mutex::new(Vec::new()),
             download_sha1_override: Mutex::new(None),
             download_should_fail: Mutex::new(false),
+            game_versions: Mutex::new(vec![
+                "1.21.5".to_string(),
+                "1.21.4".to_string(),
+                "1.21.1".to_string(),
+            ]),
+            loaders: Mutex::new(vec!["fabric".to_string(), "forge".to_string()]),
             version_calls: Mutex::new(Vec::new()),
             latest_calls: Mutex::new(Vec::new()),
             project_calls: Mutex::new(Vec::new()),
@@ -195,6 +205,14 @@ impl ApiClient for MockApi {
                 .map(|b| format!("{:02x}", b))
                 .collect())
         }
+    }
+
+    async fn get_game_versions(&self) -> anvil::error::Result<Vec<String>> {
+        Ok(self.game_versions.lock().expect("lock").clone())
+    }
+
+    async fn get_loaders(&self) -> anvil::error::Result<Vec<String>> {
+        Ok(self.loaders.lock().expect("lock").clone())
     }
 }
 

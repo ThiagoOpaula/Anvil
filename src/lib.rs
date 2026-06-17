@@ -13,6 +13,7 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod filters;
+pub mod interactive;
 pub mod locking;
 pub mod output;
 pub mod paths;

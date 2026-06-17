@@ -248,6 +248,25 @@ pub struct FilterOpts {
     pub game_version: Option<String>,
 }
 
+/// A game version tag returned by `GET /v2/tag/game_version`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameVersionTag {
+    pub version: String,
+    pub version_type: String,
+    #[serde(default)]
+    pub date: String,
+    #[serde(default)]
+    pub major: bool,
+}
+
+/// A loader tag returned by `GET /v2/tag/loader`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoaderTag {
+    pub name: String,
+    #[serde(default)]
+    pub supported_project_types: Vec<String>,
+}
+
 // ── Traits (module decoupling) ─────────────────────────────────────────
 
 /// Abstracts the Modrinth API surface needed by the updater.
@@ -278,6 +297,12 @@ pub trait ApiClient: Send + Sync {
         dest: &Path,
         progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
     ) -> crate::Result<String>;
+
+    /// Fetch all game versions known to Modrinth (release versions, newest first).
+    async fn get_game_versions(&self) -> crate::Result<Vec<String>>;
+
+    /// Fetch all mod loaders known to Modrinth (filtered to "mod" project type).
+    async fn get_loaders(&self) -> crate::Result<Vec<String>>;
 }
 
 /// Abstracts progress reporting during the update run.
