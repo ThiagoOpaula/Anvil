@@ -161,8 +161,8 @@ your mods folder
            │
            ▼
     ┌──────────────────────────────────┐
-    │  backup_17-06-2026_mc1.21.1/    │  ← old JARs moved here
-    │  └── sodium-0.5.11.jar          │
+    │  backup_17-06-2026_mc1.21.1/     │  ← old JARs moved here
+    │  └── sodium-0.5.11.jar           │
     └──────────────────────────────────┘
            │
            ▼
@@ -207,7 +207,7 @@ CLI flags always win over config values. The GUI Settings tab writes this file a
 
 ## 📜 License
 
-MIT
+**PolyForm Noncommercial 1.0.0** — free for personal, educational, and non-profit use. Commercial use requires a separate license. See [LICENSE](LICENSE).
 
 ---
 
