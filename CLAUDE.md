@@ -140,7 +140,23 @@ cargo build --release        # Binary compiles
 cargo build --release --features gui  # Both binaries compile
 ```
 
-## Modrinth API notes
+## Commit conventions
+
+Use **Conventional Commits** (o projeto já segue esse padrão):
+
+```
+<type>: <resumo curto>
+
+<corpo opcional explicando o "porquê" e não o "o quê">
+```
+
+**Tipos:** `feat` | `fix` | `docs` | `chore` | `refactor` | `test` | `style`
+
+**Regras:**
+- **Resumo:** presente imperativo, no máximo 72 caracteres, sem ponto final. Deve completar a frase *"This commit will..."*
+- **Corpo:** opcional, mas incentive quando o resumo não conta a história toda. Explique o **motivo** da mudança, não o que o código faz (o diff já mostra isso)
+- **Exemplo ruim:** `fix: fix bug in updater` — não diz qual bug nem por que
+- **Exemplo bom:** `fix: skip update check when mod is not on Modrinth`
 
 - API base: `https://api.modrinth.com/v2`
 - `GET /version_file/{hash}?algorithm=sha1` — identify mod by SHA1
