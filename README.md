@@ -3,7 +3,7 @@
   <p align="center">
     <b>Minecraft Mod Updater</b><br>
     In Minecraft, anvil repairs and upgrades your gear. Anvil does the same for your mods.<br>
-    CLI + GUI. One binary. No launcher. No bloat.
+    CLI + GUI from a single codebase. No launcher. No bloat.
   </p>
 </p>
 
@@ -11,8 +11,6 @@
   <img src="https://img.shields.io/badge/release-v0.3.1-blue?style=flat-square" alt="Latest Release">
   <img src="https://img.shields.io/badge/Rust-%23000000?style=flat-square&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
-  <img src="https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux">
-  <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS">
   <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue?style=flat-square" alt="License">
 </p>
 
@@ -58,7 +56,7 @@ Before applying updates, Anvil creates a timestamped backup and verifies every d
 
 ## 🖥️ GUI
 
-For users who prefer a graphical interface, Anvil ships a desktop app (Windows / Linux / macOS):
+For users who prefer a graphical interface, Anvil ships a desktop app for Windows (build from source on Linux/macOS):
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -231,8 +229,8 @@ Anvil is designed with safety as a core principle:
 | ⚡ **Parallel API** | 4 concurrent requests, cache-before-network |
 | 🖥️ **Desktop GUI** | egui-based 4-tab app — no terminal needed |
 | 🎮 **Interactive CLI** | Fuzzy-select menus for version and loader when no flags given |
-| 🌍 **Cross-platform** | Windows / Linux / macOS — auto-detects mods folder |
-| 📦 **Single binary** | ~7 MB CLI, ~14 MB GUI — no Python, no JRE, no runtime |
+| 🪟 **Windows** | Windows — auto-detects mods folder (Linux/macOS via source build) |
+| 📦 **Two binaries** | ~7 MB CLI (`anvil.exe`), ~11 MB GUI (`anvil-gui.exe`) — no Python, no JRE, no runtime |
 | 🎨 **Dark mode** | Light/dark theme toggle in GUI Settings |
 | ⌨️ **Keyboard shortcuts** | `Ctrl+R` scan, `Ctrl+U` check updates in GUI |
 | 🔔 **App update check** | Anvil checks for new releases on startup — never miss a version |
