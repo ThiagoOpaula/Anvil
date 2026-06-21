@@ -196,6 +196,32 @@ impl ApiClient for ModrinthApi {
         Ok(loaders)
     }
 
+    /// `GET /v2/project/{id}/version` with optional `loaders` and `game_versions` query params.
+    async fn get_project_versions(
+        &self,
+        project_id: &str,
+        loaders: &[String],
+        game_versions: &[String],
+    ) -> Result<Vec<ModVersion>> {
+        let mut path = format!("/project/{}/version?", project_id);
+        if !loaders.is_empty() {
+            path.push_str(&format!(
+                "loaders={}",
+                serde_json::to_string(loaders).unwrap()
+            ));
+            path.push('&');
+        }
+        if !game_versions.is_empty() {
+            path.push_str(&format!(
+                "game_versions={}",
+                serde_json::to_string(game_versions).unwrap()
+            ));
+        }
+        let response = self.request(reqwest::Method::GET, &path, None).await?;
+        let versions: Vec<ModVersion> = response.json().await.map_err(Error::Http)?;
+        Ok(versions)
+    }
+
     /// Streaming download with progress reporting and on-the-fly SHA1 hashing.
     ///
     /// Returns the hex-encoded SHA1 digest of the downloaded file so the

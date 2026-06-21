@@ -39,6 +39,10 @@ pub struct MockApi {
     pub game_versions: Mutex<Vec<String>>,
     /// Loaders returned by `get_loaders`.
     pub loaders: Mutex<Vec<String>>,
+    /// Maps project ID to a list of available versions.
+    pub version_map_by_project: Mutex<HashMap<String, Vec<ModVersion>>>,
+    /// Call tracking for `get_project_versions`.
+    pub versions_calls: Mutex<Vec<(String, Vec<String>, Vec<String>)>>,
 
     // Call tracking
     /// Every SHA1 passed to `get_version_from_hash`.
@@ -67,6 +71,8 @@ impl MockApi {
                 "1.21.1".to_string(),
             ]),
             loaders: Mutex::new(vec!["fabric".to_string(), "forge".to_string()]),
+            version_map_by_project: Mutex::new(HashMap::new()),
+            versions_calls: Mutex::new(Vec::new()),
             version_calls: Mutex::new(Vec::new()),
             latest_calls: Mutex::new(Vec::new()),
             project_calls: Mutex::new(Vec::new()),
@@ -98,6 +104,14 @@ impl MockApi {
             .lock()
             .unwrap()
             .insert(project_id.to_string(), project);
+    }
+
+    /// Register versions to be returned for a given project ID.
+    pub fn set_project_versions(&self, project_id: &str, versions: Vec<ModVersion>) {
+        self.version_map_by_project
+            .lock()
+            .unwrap()
+            .insert(project_id.to_string(), versions);
     }
 
     /// Set the raw bytes that `download_file` will write to the destination.
@@ -213,6 +227,25 @@ impl ApiClient for MockApi {
 
     async fn get_loaders(&self) -> anvil::error::Result<Vec<String>> {
         Ok(self.loaders.lock().expect("lock").clone())
+    }
+
+    async fn get_project_versions(
+        &self,
+        project_id: &str,
+        loaders: &[String],
+        game_versions: &[String],
+    ) -> anvil::error::Result<Vec<ModVersion>> {
+        self.versions_calls
+            .lock()
+            .unwrap()
+            .push((project_id.to_string(), loaders.to_vec(), game_versions.to_vec()));
+        Ok(self
+            .version_map_by_project
+            .lock()
+            .unwrap()
+            .get(project_id)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 

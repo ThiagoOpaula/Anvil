@@ -122,6 +122,15 @@ pub struct UpdateCandidate {
     pub project: Option<Project>,
 }
 
+/// Information about a new Anvil release from GitHub.
+#[derive(Debug, Clone)]
+pub struct AppUpdateInfo {
+    pub latest_version: String,
+    pub current_version: String,
+    pub url: String,
+    pub is_newer: bool,
+}
+
 /// Tracks the final outcome for each mod in the run.
 #[derive(Debug, Clone)]
 pub enum ModOutcome {
@@ -168,6 +177,68 @@ pub struct RunSummary {
     pub unavailable: usize,
     pub skipped: usize,
     pub failed: usize,
+}
+
+/// A mod from an imported mod list file (e.g. exported JSON/CSV).
+///
+/// The `project_id` is the primary identifier — everything else is
+/// optional metadata that helps pick the right version to download.
+///
+/// The custom deserializers accept both the current export format
+/// (arrays for `loaders`/`game_versions`) and the legacy format
+/// (comma-separated strings, singular field names) so files exported
+/// by older versions of Anvil can still be imported.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedMod {
+    pub project_id: String,
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, alias = "version")]
+    pub version_number: Option<String>,
+    #[serde(default)]
+    #[serde(alias = "loader", deserialize_with = "deserialize_comma_sep_or_vec")]
+    pub loaders: Vec<String>,
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_comma_sep_or_vec")]
+    pub game_versions: Vec<String>,
+}
+
+/// Accept a `Vec<String>` from either a JSON array `["a", "b"]` or a
+/// comma-separated plain string `"a, b"` (legacy export format).
+fn deserialize_comma_sep_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct CommaSepOrVec;
+
+    impl<'de> de::Visitor<'de> for CommaSepOrVec {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string or an array of strings")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
+            Ok(v.split(", ")
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
+                .collect())
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
+            let mut vec = Vec::new();
+            while let Some(elem) = seq.next_element::<String>()? {
+                vec.push(elem);
+            }
+            Ok(vec)
+        }
+    }
+
+    deserializer.deserialize_any(CommaSepOrVec)
 }
 
 // ── Lockfile types ─────────────────────────────────────────────────────
@@ -235,6 +306,10 @@ pub struct Config {
 
     #[serde(default)]
     pub changelog: Option<bool>,
+
+    /// Whether to use the dark theme in the GUI.
+    #[serde(default)]
+    pub dark_mode: Option<bool>,
 }
 
 // ── Filter options (derived from CLI + Config) ─────────────────────────
@@ -303,6 +378,14 @@ pub trait ApiClient: Send + Sync {
 
     /// Fetch all mod loaders known to Modrinth (filtered to "mod" project type).
     async fn get_loaders(&self) -> crate::Result<Vec<String>>;
+
+    /// List all versions of a project, optionally filtered by loader and game version.
+    async fn get_project_versions(
+        &self,
+        project_id: &str,
+        loaders: &[String],
+        game_versions: &[String],
+    ) -> crate::Result<Vec<ModVersion>>;
 }
 
 /// Abstracts progress reporting during the update run.

@@ -55,6 +55,8 @@ pub struct ResolvedConfig {
     pub confirm: bool,
     /// `true` = print the changelog for each updated mod.
     pub changelog: bool,
+    /// Whether to use the dark theme in the GUI.
+    pub dark_mode: bool,
 }
 
 // ── Loading ──────────────────────────────────────────────────────────────
@@ -170,6 +172,8 @@ pub fn resolve(cli: &Cli, config_path: Option<&Path>) -> Result<ResolvedConfig> 
 
     let changelog = cli_changelog || file.changelog.unwrap_or(false);
 
+    let dark_mode = file.dark_mode.unwrap_or(false);
+
     Ok(ResolvedConfig {
         mods_dir,
         backup,
@@ -182,5 +186,6 @@ pub fn resolve(cli: &Cli, config_path: Option<&Path>) -> Result<ResolvedConfig> 
         dry_run,
         confirm,
         changelog,
+        dark_mode,
     })
 }

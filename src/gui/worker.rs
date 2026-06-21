@@ -43,6 +43,10 @@ pub enum GuiCommand {
     FetchLoaders,
     /// Request the worker to stop at the next phase boundary.
     Cancel,
+    /// Check GitHub for a newer Anvil release.
+    CheckAppUpdate,
+    /// Download all mods from an imported mod list.
+    DownloadImportedMods(Vec<crate::types::ImportedMod>),
 }
 
 /// Events the worker sends back to the GUI.
@@ -92,6 +96,14 @@ pub enum WorkerEvent {
     Error(String),
     /// The worker has finished the current command and is idle.
     Done,
+    /// Result of checking for a new Anvil release from GitHub.
+    AppUpdateResult {
+        latest_version: String,
+        url: String,
+        is_newer: bool,
+    },
+    /// Imported mods download completed with success/failure counts.
+    ImportDownloadComplete { success: usize, failed: usize },
 }
 
 /// Shared state for the confirmation dialog bridge.
@@ -228,6 +240,57 @@ pub fn spawn_worker(shared_config: Arc<Mutex<ResolvedConfig>>) -> WorkerHandle {
                         }
                         let _ = event_tx.send(WorkerEvent::Done);
                     }
+                    GuiCommand::CheckAppUpdate => {
+                        let current = env!("CARGO_PKG_VERSION");
+                        let url = "https://api.github.com/repos/thiagoOpaula/anvil/releases/latest";
+                        match reqwest::Client::builder()
+                            .user_agent("thiagoOpaula/anvil")
+                            .build()
+                        {
+                            Ok(client) => {
+                                match client.get(url).send().await {
+                                    Ok(resp) => {
+                                        if let Ok(json) =
+                                            resp.json::<serde_json::Value>().await
+                                        {
+                                            let tag = json["tag_name"]
+                                                .as_str()
+                                                .unwrap_or("")
+                                                .strip_prefix('v')
+                                                .unwrap_or("");
+                                            let html = json["html_url"]
+                                                .as_str()
+                                                .unwrap_or(
+                                                    "https://github.com/thiagoOpaula/anvil/releases",
+                                                )
+                                                .to_string();
+                                            let is_newer = version_is_newer(tag, current);
+                                            let _ = event_tx.send(WorkerEvent::AppUpdateResult {
+                                                latest_version: format!("v{}", tag),
+                                                url: html,
+                                                is_newer,
+                                            });
+                                        } else {
+                                            let _ = event_tx.send(WorkerEvent::Error(
+                                                "Failed to parse GitHub release info.".into(),
+                                            ));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(WorkerEvent::Error(
+                                            format!("Update check failed: {}", e),
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(WorkerEvent::Error(
+                                    format!("Update check HTTP client error: {}", e),
+                                ));
+                            }
+                        }
+                        let _ = event_tx.send(WorkerEvent::Done);
+                    }
                     GuiCommand::ScanMods(dir) => {
                         let mut scan_config = config;
                         scan_config.mods_dir = dir;
@@ -248,6 +311,149 @@ pub fn spawn_worker(shared_config: Arc<Mutex<ResolvedConfig>>) -> WorkerHandle {
                         dl_config.dry_run = false;
                         dl_config.confirm = true;
                         run_full_update(&dl_config, &api, &cache, &progress, &event_tx).await;
+                        let _ = event_tx.send(WorkerEvent::Done);
+                    }
+                    GuiCommand::DownloadImportedMods(mods) => {
+                        let total = mods.len() as u64;
+                        let _ = event_tx.send(WorkerEvent::PhaseStarted {
+                            label: "Downloading imported mods".into(),
+                            total,
+                        });
+
+                        let cfg = config;
+                        let mut success = 0usize;
+                        let mut failed = 0usize;
+
+                        for (i, imported_mod) in mods.iter().enumerate() {
+                            let _ = event_tx
+                                .send(WorkerEvent::PhaseProgress { current: i as u64 });
+
+                            let loaders = if !imported_mod.loaders.is_empty() {
+                                imported_mod.loaders.clone()
+                            } else if let Some(ref loader) = cfg.loader {
+                                vec![loader.clone()]
+                            } else {
+                                vec![]
+                            };
+
+                            let game_versions = if !imported_mod.game_versions.is_empty() {
+                                imported_mod.game_versions.clone()
+                            } else if let Some(ref gv) = cfg.game_version {
+                                vec![gv.clone()]
+                            } else {
+                                vec![]
+                            };
+
+                            match api
+                                .get_project_versions(
+                                    &imported_mod.project_id,
+                                    &loaders,
+                                    &game_versions,
+                                )
+                                .await
+                            {
+                                Ok(versions) => {
+                                    if versions.is_empty() {
+                                        let name = imported_mod
+                                            .name
+                                            .as_deref()
+                                            .unwrap_or(&imported_mod.project_id);
+                                        let _ = event_tx.send(WorkerEvent::Log {
+                                            message: format!(
+                                                "No matching version for {}",
+                                                name
+                                            ),
+                                        });
+                                        failed += 1;
+                                        continue;
+                                    }
+
+                                    let version =
+                                        if let Some(ref target_ver) =
+                                            imported_mod.version_number
+                                        {
+                                            versions
+                                                .iter()
+                                                .find(|v| {
+                                                    v.version_number == *target_ver
+                                                })
+                                                .unwrap_or_else(|| &versions[0])
+                                        } else {
+                                            &versions[0]
+                                        };
+
+                                    let file = version
+                                        .files
+                                        .iter()
+                                        .find(|f| f.primary)
+                                        .or_else(|| version.files.first());
+
+                                    if let Some(file) = file {
+                                        let dest = cfg.mods_dir.join(&file.filename);
+                                        match api
+                                            .download_file(
+                                                &file.url,
+                                                &dest,
+                                                &|_, _| {},
+                                            )
+                                            .await
+                                        {
+                                            Ok(_) => {
+                                                let name = imported_mod
+                                                    .name
+                                                    .as_deref()
+                                                    .unwrap_or(
+                                                        &imported_mod.project_id,
+                                                    );
+                                                let _ = event_tx.send(
+                                                    WorkerEvent::Log {
+                                                        message: format!(
+                                                            "Downloaded {} as {}",
+                                                            name, file.filename
+                                                        ),
+                                                    },
+                                                );
+                                                success += 1;
+                                            }
+                                            Err(e) => {
+                                                failed += 1;
+                                                let _ = event_tx.send(
+                                                    WorkerEvent::Log {
+                                                        message: format!(
+                                                            "Download failed for {}: {}",
+                                                            imported_mod.project_id, e
+                                                        ),
+                                                    },
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        failed += 1;
+                                        let _ = event_tx.send(WorkerEvent::Log {
+                                            message: format!(
+                                                "No downloadable file for {}",
+                                                imported_mod.project_id
+                                            ),
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    failed += 1;
+                                    let _ = event_tx.send(WorkerEvent::Log {
+                                        message: format!(
+                                            "API error for project {}: {}",
+                                            imported_mod.project_id, e
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+
+                        let _ = event_tx.send(WorkerEvent::PhaseFinished);
+                        let _ = event_tx.send(WorkerEvent::ImportDownloadComplete {
+                            success,
+                            failed,
+                        });
                         let _ = event_tx.send(WorkerEvent::Done);
                     }
                     GuiCommand::Rollback => {
@@ -439,4 +645,28 @@ async fn run_full_update(
             let _ = event_tx.send(WorkerEvent::Error(format!("update: {}", e)));
         }
     }
+}
+
+/// Compare two dotted version strings (e.g. "0.4.0" vs "0.3.1").
+/// Returns true if `latest` is strictly greater than `current`.
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> {
+        v.split('.')
+            .filter_map(|s| s.parse::<u32>().ok())
+            .collect()
+    };
+    let cur = parse(current);
+    let new = parse(latest);
+    let max_len = cur.len().max(new.len());
+    let cur: Vec<u32> = cur
+        .into_iter()
+        .chain(std::iter::repeat(0))
+        .take(max_len)
+        .collect();
+    let new: Vec<u32> = new
+        .into_iter()
+        .chain(std::iter::repeat(0))
+        .take(max_len)
+        .collect();
+    new > cur
 }

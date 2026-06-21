@@ -107,6 +107,7 @@ pub fn make_test_config(mods_dir: &PathBuf) -> ResolvedConfig {
         dry_run: false,
         confirm: true,
         changelog: false,
+        dark_mode: false,
     }
 }
 
@@ -128,6 +129,7 @@ pub fn make_config(mods_dir: &Path) -> ResolvedConfig {
         dry_run: false,
         confirm: false,
         changelog: false,
+        dark_mode: false,
     }
 }
 

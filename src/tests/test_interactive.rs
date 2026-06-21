@@ -80,6 +80,7 @@ async fn prompt_if_needed_noop_when_not_tty() {
         dry_run: true,
         confirm: false,
         changelog: false,
+        dark_mode: false,
     };
 
     // When both loader and game_version are Some, prompt_if_needed skips

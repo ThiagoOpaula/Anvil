@@ -35,6 +35,20 @@ fn main() -> eframe::Result<()> {
 
     tracing::info!("Anvil GUI starting");
 
+    // ── Restore saved window geometry (if any) ─────────────────────────────
+    #[derive(serde::Deserialize)]
+    struct SavedGeometry {
+        width: f32,
+        height: f32,
+        x: Option<f32>,
+        y: Option<f32>,
+    }
+
+    let geom_path = paths::config_dir().join("window.json");
+    let saved_geometry: Option<SavedGeometry> = std::fs::read_to_string(&geom_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+
     // ── Load config ──────────────────────────────────────────────────────
     let config_path = paths::config_dir().join("config.toml");
     let resolved = match config::load(&config_path) {
@@ -54,6 +68,7 @@ fn main() -> eframe::Result<()> {
                 dry_run: file_cfg.dry_run.unwrap_or(false),
                 confirm: file_cfg.confirm.unwrap_or(true),
                 changelog: file_cfg.changelog.unwrap_or(false),
+                dark_mode: file_cfg.dark_mode.unwrap_or(false),
             }
         }
         Err(e) => {
@@ -70,15 +85,25 @@ fn main() -> eframe::Result<()> {
                 dry_run: false,
                 confirm: true,
                 changelog: false,
+                dark_mode: false,
             }
         }
     };
 
     // ── Launch GUI ──────────────────────────────────────────────────────
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1100.0, 750.0])
+        .with_min_inner_size([800.0, 500.0]);
+
+    if let Some(ref geo) = saved_geometry {
+        viewport = viewport.with_inner_size([geo.width, geo.height]);
+        if let (Some(x), Some(y)) = (geo.x, geo.y) {
+            viewport = viewport.with_position([x, y]);
+        }
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1100.0, 750.0])
-            .with_min_inner_size([800.0, 500.0]),
+        viewport,
         ..Default::default()
     };
 

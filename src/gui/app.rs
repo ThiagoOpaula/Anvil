@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::config::ResolvedConfig;
-use crate::types::{IdentifiedMod, ModOutcome, RunSummary};
+use crate::types::{IdentifiedMod, ImportedMod, ModOutcome, RunSummary};
 
 use super::worker::{spawn_worker, GuiCommand, WorkerEvent, WorkerHandle};
 
@@ -32,6 +32,13 @@ impl Tab {
             Tab::Rollback => "Rollback",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExportFormat {
+    Csv,
+    Markdown,
+    Json,
 }
 
 // ── Log entry ──────────────────────────────────────────────────────────────
@@ -99,6 +106,13 @@ pub struct AnvilApp {
     // Worker busy
     worker_busy: bool,
 
+    /// App self-update check result from GitHub.
+    app_update_info: Option<crate::types::AppUpdateInfo>,
+    /// Whether an app update check is in progress.
+    app_update_checking: bool,
+    /// Whether the startup update banner has been dismissed.
+    update_banner_dismissed: bool,
+
     // Settings form overrides (stored separately, synced on Save)
     settings_backup: bool,
     settings_loader: String,
@@ -108,10 +122,21 @@ pub struct AnvilApp {
     settings_changelog: bool,
     settings_include: String,
     settings_exclude: String,
+    settings_dark_mode: bool,
+    applied_dark_mode: bool,
 
     // Browse button deferred — native dialog opens between frames
     // so it doesn't conflict with egui's render context.
     browse_pending: bool,
+
+    /// Deferred export dialog — opens between frames.
+    export_pending: Option<ExportFormat>,
+
+    /// Deferred import file dialog — opens between frames.
+    import_pending: bool,
+
+    /// Mods imported from an external mod list file.
+    imported_mods: Vec<ImportedMod>,
 }
 
 impl AnvilApp {
@@ -128,6 +153,7 @@ impl AnvilApp {
         // Request game versions and loaders on startup.
         worker.send_command(GuiCommand::FetchGameVersions);
         worker.send_command(GuiCommand::FetchLoaders);
+        worker.send_command(GuiCommand::CheckAppUpdate);
 
         let sl = resolved.loader.unwrap_or_default();
         let sgv = resolved.game_version.unwrap_or_default();
@@ -161,6 +187,9 @@ impl AnvilApp {
             game_versions: vec![],
             loaders: vec![],
             worker_busy: false,
+            app_update_info: None,
+            app_update_checking: true,
+            update_banner_dismissed: false,
             settings_backup: resolved.backup,
             settings_loader: sl,
             settings_game_version: sgv,
@@ -169,7 +198,12 @@ impl AnvilApp {
             settings_changelog: resolved.changelog,
             settings_include: sinc,
             settings_exclude: sexc,
+            settings_dark_mode: resolved.dark_mode,
+            applied_dark_mode: resolved.dark_mode,
             browse_pending: false,
+            export_pending: None,
+            import_pending: false,
+            imported_mods: vec![],
         }
     }
 
@@ -261,6 +295,38 @@ impl AnvilApp {
                 WorkerEvent::Done => {
                     self.worker_busy = false;
                 }
+                WorkerEvent::AppUpdateResult {
+                    latest_version,
+                    url,
+                    is_newer,
+                } => {
+                    self.app_update_info = Some(crate::types::AppUpdateInfo {
+                        latest_version,
+                        current_version: env!("CARGO_PKG_VERSION").to_string(),
+                        url,
+                        is_newer,
+                    });
+                    self.app_update_checking = false;
+                    if is_newer {
+                        self.update_banner_dismissed = false;
+                    }
+                }
+                WorkerEvent::ImportDownloadComplete { success, failed } => {
+                    self.worker_busy = false;
+                    self.log_messages.push(LogEntry {
+                        message: format!(
+                            "Download complete: {} succeeded, {} failed. Re-scanning...",
+                            success, failed
+                        ),
+                    });
+                    // Auto-re-scan so identified_mods reflects the newly downloaded JARs.
+                    let dir = PathBuf::from(&self.mods_dir_input);
+                    self.identified_mods.clear();
+                    self.unknown_count = 0;
+                    self.total_jars = 0;
+                    self.imported_mods.clear();
+                    self.worker.send_command(GuiCommand::ScanMods(dir));
+                }
                 // TableReady is informational — real data arrives via OutcomesReady.
                 WorkerEvent::TableReady { .. } => {}
             }
@@ -321,6 +387,105 @@ impl AnvilApp {
             ModOutcome::Failed { .. } => "!",
         }
     }
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        if self.settings_dark_mode != self.applied_dark_mode {
+            if self.settings_dark_mode {
+                ctx.set_visuals(egui::Visuals::dark());
+            } else {
+                ctx.set_visuals(egui::Visuals::light());
+            }
+            self.applied_dark_mode = self.settings_dark_mode;
+        }
+    }
+
+    fn export_scan_results(&self, format: ExportFormat) -> String {
+        let mods: Vec<(&String, &String, &String, &String, String, String)> = self
+            .identified_mods
+            .iter()
+            .map(|m| {
+                (
+                    &m.filename,
+                    &m.current_version.name,
+                    &m.current_version.version_number,
+                    &m.current_version.project_id,
+                    m.current_version.loaders.join(", "),
+                    m.current_version.game_versions.join(", "),
+                )
+            })
+            .collect();
+
+        match format {
+            ExportFormat::Csv => {
+                let mut out =
+                    String::from("Filename,Name,Version,Project ID,Loader,Game Versions\n");
+                for (f, n, v, pid, l, g) in &mods {
+                    let escape = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+                    out.push_str(&format!(
+                        "{},{},{},{},{},{}\n",
+                        escape(f),
+                        escape(n),
+                        escape(v),
+                        escape(pid),
+                        escape(l),
+                        escape(g)
+                    ));
+                }
+                out
+            }
+            ExportFormat::Markdown => {
+                let mut out =
+                    String::from("| Filename | Name | Version | Project ID | Loader | Game Versions |\n");
+                out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+                for (f, n, v, pid, l, g) in &mods {
+                    out.push_str(&format!("| {} | {} | {} | {} | {} | {} |\n", f, n, v, pid, l, g));
+                }
+                out
+            }
+            ExportFormat::Json => {
+                let entries: Vec<serde_json::Value> = self
+                    .identified_mods
+                    .iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "filename": m.filename,
+                            "name": m.current_version.name,
+                            "version_number": m.current_version.version_number,
+                            "project_id": m.current_version.project_id,
+                            "loaders": m.current_version.loaders,
+                            "game_versions": m.current_version.game_versions,
+                        })
+                    })
+                    .collect();
+                serde_json::to_string_pretty(&entries).unwrap_or_default()
+            }
+        }
+    }
+
+    /// Import a list of mods, filtering out any whose `project_id` already
+    /// exists in the currently identified mods (i.e., already present on disk)
+    /// to avoid pointless re-downloads.
+    fn set_imported_mods_deduped(&mut self, new_mods: Vec<ImportedMod>) {
+        let total = new_mods.len();
+        let existing_ids: std::collections::HashSet<String> = self
+            .identified_mods
+            .iter()
+            .map(|m| m.current_version.project_id.clone())
+            .collect();
+        let fresh: Vec<ImportedMod> = new_mods
+            .into_iter()
+            .filter(|m| !existing_ids.contains(&m.project_id))
+            .collect();
+        let skipped = total - fresh.len();
+        self.imported_mods = fresh;
+        if skipped > 0 {
+            self.log_messages.push(LogEntry {
+                message: format!(
+                    "Skipped {} mod(s) already present in scan results.",
+                    skipped
+                ),
+            });
+        }
+    }
 }
 
 // ── eframe::App impl ──────────────────────────────────────────────────────
@@ -329,15 +494,141 @@ impl eframe::App for AnvilApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Drain worker events (non-blocking).
         self.process_events();
+        self.apply_theme(ctx);
 
         // Open native folder dialog between frames (outside any ui scope)
         // so it doesn't conflict with egui's render context.
         if self.browse_pending {
-            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_directory(&self.mods_dir_input)
+                .pick_folder() {
                 self.mods_dir_input = path.display().to_string();
             }
             self.browse_pending = false;
             ctx.request_repaint();
+        }
+
+        if let Some(format) = self.export_pending.take() {
+            let filter = match format {
+                ExportFormat::Csv => rfd::FileDialog::new()
+                    .add_filter("CSV Files", &["csv"])
+                    .set_file_name("anvil_mods.csv"),
+                ExportFormat::Markdown => rfd::FileDialog::new()
+                    .add_filter("Markdown Files", &["md"])
+                    .set_file_name("anvil_mods.md"),
+                ExportFormat::Json => rfd::FileDialog::new()
+                    .add_filter("JSON Files", &["json"])
+                    .set_file_name("anvil_mods.json"),
+            };
+            if let Some(path) = filter.save_file() {
+                let content = self.export_scan_results(format);
+                let _ = std::fs::write(&path, content);
+                self.log_messages.push(LogEntry {
+                    message: format!("Exported to {}", path.display()),
+                });
+            }
+            ctx.request_repaint();
+        }
+
+        if self.import_pending {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Mod list", &["json", "csv"])
+                .add_filter("JSON", &["json"])
+                .add_filter("CSV", &["csv"])
+                .pick_file()
+            {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        let ext = path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("");
+                        match ext {
+                            "json" => {
+                                if let Ok(mods) = serde_json::from_str::<
+                                    Vec<ImportedMod>,
+                                >(&content)
+                                {
+                                    self.set_imported_mods_deduped(mods);
+                                    self.log_messages.push(LogEntry {
+                                        message: format!(
+                                            "Imported {} mod(s) from {}",
+                                            self.imported_mods.len(),
+                                            path.display()
+                                        ),
+                                    });
+                                } else {
+                                    self.log_messages.push(LogEntry {
+                                        message: format!(
+                                            "Error: Failed to parse JSON from {}",
+                                            path.display()
+                                        ),
+                                    });
+                                }
+                            }
+                            "csv" => {
+                                let mods = parse_imported_csv(&content);
+                                if !mods.is_empty() {
+                                    self.set_imported_mods_deduped(mods);
+                                    self.log_messages.push(LogEntry {
+                                        message: format!(
+                                            "Imported {} mod(s) from {}",
+                                            self.imported_mods.len(),
+                                            path.display()
+                                        ),
+                                    });
+                                } else {
+                                    self.log_messages.push(LogEntry {
+                                        message: format!(
+                                            "Error: No valid mods found in {}",
+                                            path.display()
+                                        ),
+                                    });
+                                }
+                            }
+                            _ => {
+                                self.log_messages.push(LogEntry {
+                                    message: format!(
+                                        "Error: Unsupported file format: .{}",
+                                        ext
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.log_messages.push(LogEntry {
+                            message: format!("Error reading file: {}", e),
+                        });
+                    }
+                }
+            }
+            self.import_pending = false;
+            ctx.request_repaint();
+        }
+
+        // Keyboard shortcuts (only when no text field is focused).
+        if !ctx.wants_keyboard_input() {
+            ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::CTRL, egui::Key::R) {
+                    self.active_tab = Tab::Scan;
+                    let dir = PathBuf::from(&self.mods_dir_input);
+                    self.identified_mods.clear();
+                    self.unknown_count = 0;
+                    self.total_jars = 0;
+                    self.log_messages.clear();
+                    self.worker.send_command(GuiCommand::ScanMods(dir));
+                }
+                if i.consume_key(egui::Modifiers::CTRL, egui::Key::U) {
+                    self.active_tab = Tab::Updates;
+                    self.update_outcomes.clear();
+                    self.candidates_count = 0;
+                    self.summary = None;
+                    self.log_messages.clear();
+                    self.sync_config_to_worker();
+                    self.worker.send_command(GuiCommand::CheckUpdates);
+                }
+            });
         }
 
         // ── Top tab bar ──────────────────────────────────────────────────
@@ -347,6 +638,26 @@ impl eframe::App for AnvilApp {
                     ui.selectable_value(&mut self.active_tab, *tab, tab.label());
                 }
             });
+            // Show update banner if a newer version is available.
+            if let Some(ref info) = self.app_update_info
+                && info.is_newer
+                && !self.update_banner_dismissed
+            {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!(
+                            "Anvil {} is available! You are running {}.",
+                            info.latest_version, info.current_version
+                        ),
+                    );
+                    ui.hyperlink_to("Download", &info.url);
+                    if ui.small_button("Dismiss").clicked() {
+                        self.update_banner_dismissed = true;
+                    }
+                });
+            }
         });
 
         // ── Central content ──────────────────────────────────────────────
@@ -434,6 +745,25 @@ impl eframe::App for AnvilApp {
         if self.worker_busy {
             ctx.request_repaint();
         }
+
+        // Persist window geometry when the window is closing.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let geo_path = crate::paths::config_dir().join("window.json");
+            if let Some(parent) = geo_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+                let geo = serde_json::json!({
+                    "width": rect.size().x,
+                    "height": rect.size().y,
+                    "x": rect.min.x,
+                    "y": rect.min.y,
+                });
+                if let Ok(json) = serde_json::to_string_pretty(&geo) {
+                    let _ = std::fs::write(&geo_path, json);
+                }
+            }
+        }
     }
 }
 
@@ -465,6 +795,57 @@ impl AnvilApp {
             }
             if self.worker_busy {
                 ui.spinner();
+            }
+        });
+
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !self.identified_mods.is_empty() && !self.worker_busy,
+                    egui::Button::new("Export CSV"),
+                )
+                .clicked()
+            {
+                self.export_pending = Some(ExportFormat::Csv);
+            }
+            if ui
+                .add_enabled(
+                    !self.identified_mods.is_empty() && !self.worker_busy,
+                    egui::Button::new("Export Markdown"),
+                )
+                .clicked()
+            {
+                self.export_pending = Some(ExportFormat::Markdown);
+            }
+            if ui
+                .add_enabled(
+                    !self.identified_mods.is_empty() && !self.worker_busy,
+                    egui::Button::new("Export JSON"),
+                )
+                .clicked()
+            {
+                self.export_pending = Some(ExportFormat::Json);
+            }
+        });
+
+        ui.horizontal(|ui| {
+            if ui.button("Import Mod List").clicked() {
+                self.import_pending = true;
+            }
+            if !self.imported_mods.is_empty()
+                && ui
+                    .add_enabled(
+                        !self.worker_busy,
+                        egui::Button::new("Download All Imported"),
+                    )
+                    .clicked()
+            {
+                self.log_messages.clear();
+                self.total_jars = self.imported_mods.len();
+                self.worker
+                    .send_command(GuiCommand::DownloadImportedMods(
+                        self.imported_mods.clone(),
+                    ));
             }
         });
 
@@ -502,59 +883,136 @@ impl AnvilApp {
             ));
 
             let available_height = ui.available_height().max(200.0);
-            egui::ScrollArea::vertical()
-                .max_height(available_height)
-                .show(ui, |ui| {
-                    egui_extras::TableBuilder::new(ui)
-                        .striped(true)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(egui_extras::Column::remainder().at_least(150.0))
-                        .column(egui_extras::Column::remainder().at_least(100.0))
-                        .column(egui_extras::Column::remainder().at_least(70.0))
-                        .column(egui_extras::Column::remainder().at_least(70.0))
-                        .column(egui_extras::Column::remainder().at_least(100.0))
-                        .header(20.0, |mut header| {
-                            header.col(|ui| {
-                                ui.strong("Filename");
+            ui.push_id("scan_identified_table", |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(available_height)
+                    .show(ui, |ui| {
+                        egui_extras::TableBuilder::new(ui)
+                            .striped(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(egui_extras::Column::remainder().at_least(150.0))
+                            .column(egui_extras::Column::remainder().at_least(100.0))
+                            .column(egui_extras::Column::remainder().at_least(70.0))
+                            .column(egui_extras::Column::remainder().at_least(70.0))
+                            .column(egui_extras::Column::remainder().at_least(100.0))
+                            .header(20.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.strong("Filename");
+                                });
+                                header.col(|ui| {
+                                    ui.strong("Name");
+                                });
+                                header.col(|ui| {
+                                    ui.strong("Version");
+                                });
+                                header.col(|ui| {
+                                    ui.strong("Loader");
+                                });
+                                header.col(|ui| {
+                                    ui.strong("Game Versions");
+                                });
+                            })
+                            .body(|body| {
+                                body.rows(18.0, filtered.len(), |mut row| {
+                                    let idx = row.index();
+                                    if let Some(m) = filtered.get(idx) {
+                                        let loaders = m.current_version.loaders.join(", ");
+                                        let gvs = m.current_version.game_versions.join(", ");
+                                        row.col(|ui| {
+                                            ui.label(&m.filename);
+                                        });
+                                        row.col(|ui| {
+                                            ui.hyperlink_to(
+                                                &m.current_version.name,
+                                                format!(
+                                                    "https://modrinth.com/mod/{}",
+                                                    m.current_version.project_id
+                                                ),
+                                            );
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(&m.current_version.version_number);
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(if loaders.is_empty() { "\u{2014}" } else { &loaders });
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(if gvs.is_empty() { "\u{2014}" } else { &gvs });
+                                        });
+                                    }
+                                });
                             });
-                            header.col(|ui| {
-                                ui.strong("Name");
+                    });
+            });
+        }
+
+        if !self.imported_mods.is_empty() {
+            ui.separator();
+            ui.heading(format!(
+                "Imported Mods ({})",
+                self.imported_mods.len()
+            ));
+            let available_height = ui.available_height().max(100.0);
+            ui.push_id("scan_imported_table", |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(available_height)
+                    .show(ui, |ui| {
+                        egui_extras::TableBuilder::new(ui)
+                            .striped(true)
+                            .cell_layout(egui::Layout::left_to_right(
+                                egui::Align::Center,
+                            ))
+                            .column(
+                                egui_extras::Column::remainder().at_least(100.0),
+                            )
+                            .column(
+                                egui_extras::Column::remainder().at_least(60.0),
+                            )
+                            .column(
+                                egui_extras::Column::remainder().at_least(80.0),
+                            )
+                            .header(20.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.strong("Name");
+                                });
+                                header.col(|ui| {
+                                    ui.strong("Version");
+                                });
+                                header.col(|ui| {
+                                    ui.strong("Loader");
+                                });
+                            })
+                            .body(|body| {
+                                body.rows(18.0, self.imported_mods.len(), |mut row| {
+                                    let idx = row.index();
+                                    if let Some(m) = self.imported_mods.get(idx) {
+                                        let name = m
+                                            .name
+                                            .as_deref()
+                                            .unwrap_or(&m.project_id);
+                                        let ver = m
+                                            .version_number
+                                            .as_deref()
+                                            .unwrap_or("(latest)");
+                                        let ld = m.loaders.join(", ");
+                                        row.col(|ui| {
+                                            ui.label(name);
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(ver);
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(if ld.is_empty() {
+                                                "\u{2014}"
+                                            } else {
+                                                &ld
+                                            });
+                                        });
+                                    }
+                                });
                             });
-                            header.col(|ui| {
-                                ui.strong("Version");
-                            });
-                            header.col(|ui| {
-                                ui.strong("Loader");
-                            });
-                            header.col(|ui| {
-                                ui.strong("Game Versions");
-                            });
-                        })
-                        .body(|body| {
-                            body.rows(18.0, filtered.len(), |mut row| {
-                                let idx = row.index();
-                                if let Some(m) = filtered.get(idx) {
-                                    let loaders = m.current_version.loaders.join(", ");
-                                    let gvs = m.current_version.game_versions.join(", ");
-                                    row.col(|ui| {
-                                        ui.label(&m.filename);
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(&m.current_version.name);
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(&m.current_version.version_number);
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(if loaders.is_empty() { "\u{2014}" } else { &loaders });
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(if gvs.is_empty() { "\u{2014}" } else { &gvs });
-                                    });
-                                }
-                            });
-                        });
-                });
+                    });
+            });
         }
     }
 
@@ -698,6 +1156,7 @@ impl AnvilApp {
         } else {
             let available_height = ui.available_height().max(150.0);
             egui::ScrollArea::vertical()
+                .id_salt("updates_outcomes")
                 .max_height(available_height)
                 .show(ui, |ui| {
                     egui_extras::TableBuilder::new(ui)
@@ -729,7 +1188,7 @@ impl AnvilApp {
                                         ui.label(Self::outcome_icon(outcome));
                                     });
                                     row.col(|ui| {
-                                        ui.label(outcome_label(outcome));
+                                        render_outcome_label(ui, outcome);
                                     });
                                     row.col(|ui| {
                                         ui.label(outcome_current(outcome));
@@ -813,6 +1272,50 @@ impl AnvilApp {
 
         ui.checkbox(&mut self.settings_confirm, "Confirm before downloading");
         ui.checkbox(&mut self.settings_changelog, "Show changelog");
+
+        ui.separator();
+        ui.heading("App Updates");
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !self.app_update_checking,
+                    egui::Button::new("Check for Updates"),
+                )
+                .clicked()
+            {
+                self.app_update_checking = true;
+                self.app_update_info = None;
+                self.worker.send_command(GuiCommand::CheckAppUpdate);
+            }
+            if self.app_update_checking {
+                ui.spinner();
+                ui.label("Checking...");
+            }
+        });
+        if let Some(ref info) = self.app_update_info {
+            if info.is_newer {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    format!(
+                        "New version available: {} (you are running {}).",
+                        info.latest_version, info.current_version
+                    ),
+                );
+                ui.hyperlink_to("Open download page", &info.url);
+            } else {
+                ui.colored_label(
+                    egui::Color32::GREEN,
+                    format!(
+                        "You are running the latest version ({}).",
+                        info.current_version
+                    ),
+                );
+            }
+        }
+
+        ui.separator();
+        ui.heading("Appearance");
+        ui.checkbox(&mut self.settings_dark_mode, "Dark mode");
 
         ui.separator();
 
@@ -974,6 +1477,7 @@ impl AnvilApp {
             dry_run: None,
             confirm: Some(self.settings_confirm),
             changelog: Some(self.settings_changelog),
+            dark_mode: Some(self.settings_dark_mode),
         };
 
         if let Some(parent) = config_path.parent() {
@@ -991,6 +1495,19 @@ impl AnvilApp {
 }
 
 // ── Outcome display helpers ────────────────────────────────────────────────
+
+fn render_outcome_label(ui: &mut egui::Ui, outcome: &ModOutcome) {
+    match outcome {
+        ModOutcome::Updated { slug, .. }
+        | ModOutcome::UpToDate { slug, .. }
+        | ModOutcome::Unavailable { slug, .. } => {
+            ui.hyperlink_to(slug.as_str(), format!("https://modrinth.com/mod/{}", slug));
+        }
+        _ => {
+            ui.label(outcome_label(outcome));
+        }
+    }
+}
 
 fn outcome_label(outcome: &ModOutcome) -> &str {
     match outcome {
@@ -1020,4 +1537,51 @@ fn outcome_latest(outcome: &ModOutcome) -> &str {
         ModOutcome::UpToDate { version, .. } => version,
         _ => "\u{2014}",
     }
+}
+
+/// Parse an imported CSV file with header row and project_id column.
+///
+/// Expected format (matching what export generates):
+/// `Filename,Name,Version,Project ID,Loader,Game Versions`
+/// Each row is parsed, the Project ID column is required.
+fn parse_imported_csv(content: &str) -> Vec<ImportedMod> {
+    let mut mods = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        if i == 0 || line.trim().is_empty() {
+            continue; // Skip header and blank lines
+        }
+        // Simple comma split — handles basic CSV without quoting (the export
+        // format quotes everything, but for import we accept both).
+        let fields: Vec<&str> = line.split(',').map(|s| s.trim().trim_matches('"')).collect();
+        if fields.len() >= 4 {
+            let project_id = fields[3].to_string();
+            if !project_id.is_empty() {
+                mods.push(ImportedMod {
+                    project_id,
+                    slug: None,
+                    name: if fields.len() > 1 && !fields[1].is_empty() {
+                        Some(fields[1].to_string())
+                    } else {
+                        None
+                    },
+                    version_number: if fields.len() > 2 && !fields[2].is_empty() {
+                        Some(fields[2].to_string())
+                    } else {
+                        None
+                    },
+                    loaders: if fields.len() > 4 && !fields[4].is_empty() {
+                        fields[4].split(", ").map(|s| s.to_string()).collect()
+                    } else {
+                        vec![]
+                    },
+                    game_versions: if fields.len() > 5 && !fields[5].is_empty() {
+                        fields[5].split(", ").map(|s| s.to_string()).collect()
+                    } else {
+                        vec![]
+                    },
+                });
+            }
+        }
+    }
+    mods
 }
