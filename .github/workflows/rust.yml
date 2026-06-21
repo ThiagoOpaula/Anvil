@@ -13,21 +13,33 @@ env:
 jobs:
   check:
     name: Check
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+      - name: Install system deps (Linux GUI)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-x11-dev libwayland-dev libgtk-3-dev
       - run: cargo check --verbose
       - run: cargo check --features gui --verbose
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - name: Install system deps (GUI)
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libgtk-3-dev
+      - name: Install system deps (Linux GUI)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-x11-dev libwayland-dev libgtk-3-dev
       - run: cargo clippy --verbose
       - run: cargo clippy --features gui --verbose
 
@@ -37,27 +49,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        features: ["", "gui"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - name: Install system deps (Linux GUI)
-        if: matrix.os == 'ubuntu-latest' && matrix.features == 'gui'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libgtk-3-dev
-      - name: Build
-        run: |
-          if [ "${{ matrix.features }}" = "gui" ]; then
-            cargo build --features gui --verbose
-          else
-            cargo build --verbose
-          fi
-        shell: bash
-      - name: Run tests
-        run: |
-          if [ "${{ matrix.features }}" = "gui" ]; then
-            cargo test --features gui --verbose
-          else
-            cargo test --verbose
-          fi
-        shell: bash
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-x11-dev libwayland-dev libgtk-3-dev
+      - run: cargo test --verbose
+      - run: cargo test --features gui --verbose
