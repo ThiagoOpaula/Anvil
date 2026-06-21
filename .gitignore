@@ -3,4 +3,5 @@
 __pycache__/
 **/*.rs.bk
 *.pdb
-.claude/
+.claude/worktrees/
+.claude/scheduled_tasks.json
