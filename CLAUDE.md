@@ -158,6 +158,24 @@ Use **Conventional Commits** (o projeto já segue esse padrão):
 - **Exemplo ruim:** `fix: fix bug in updater` — não diz qual bug nem por que
 - **Exemplo bom:** `fix: skip update check when mod is not on Modrinth`
 
+## Versioning
+
+Projeto segue **SemVer** no formato `0.x.y` (pré-1.0):
+
+- **MINOR (0.x.0)** — novas features, mudanças significativas. Ex: GUI overhaul, import/export
+- **PATCH (0.0.x)** — bug fixes, docs, refactors, chores, tweaks
+
+A versão está no `Cargo.toml` (`package.version`). Ao lançar um release:
+
+1. Bump no `Cargo.toml` e README badge
+2. Rodar `cargo check` para atualizar `Cargo.lock`
+3. Commitar com `chore: bump version to v{X.Y.Z}`
+4. Criar tag `v{X.Y.Z}`
+5. Buildar `cargo build --release --features gui`
+6. Publicar os `.exe` no GitHub Releases
+
+## Modrinth API notes
+
 - API base: `https://api.modrinth.com/v2`
 - `GET /version_file/{hash}?algorithm=sha1` — identify mod by SHA1
 - `POST /version_file/{hash}/update` — get latest version filtered by loader + game version

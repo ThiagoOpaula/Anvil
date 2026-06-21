@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/release-v0.3.1-blue?style=flat-square" alt="Latest Release">
+  <img src="https://img.shields.io/badge/release-v0.4.0-blue?style=flat-square" alt="Latest Release">
   <img src="https://img.shields.io/badge/Rust-%23000000?style=flat-square&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue?style=flat-square" alt="License">
