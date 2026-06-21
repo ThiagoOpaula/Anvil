@@ -40,7 +40,7 @@ anvil
 anvil --game-version 1.21.4
 ```
 
-**New:** interactive prompts — just run `anvil` with no flags and pick your version/loader from a menu. Or use the GUI: `anvil-gui.exe` (4-tab desktop app).
+**New:** Desktop GUI with dark mode, export/import, keyboard shortcuts, and auto-update checks. Or use the interactive CLI — no flags required. Run `anvil-gui.exe` or just `anvil`.
 
 It auto-detects your mods folder. No config required.
 
@@ -76,10 +76,12 @@ For users who prefer a graphical interface, Anvil ships a desktop app (Windows /
 └─────────────────────────────────────────────────────┘
 ```
 
-- **Scan & Identify** — browse your mods folder, see every mod's loader and game version
+- **Scan & Identify** — browse your mods folder, see every mod's loader and game version, click mod names to open their Modrinth page. Export results as CSV, Markdown, or JSON
+- **Import Mod List** — load an exported mod list and download all mods with one click
 - **Updates** — pick a target Minecraft version and loader, check for updates, download with one click
-- **Settings** — configure backup, changelog, include/exclude filters, and save to `config.toml`
+- **Settings** — configure backup, changelog, dark mode, include/exclude filters, and save to `config.toml`
 - **Rollback** — restore mods from the last backup
+- **Keyboard shortcuts** — `Ctrl+R` to scan, `Ctrl+U` to check updates
 
 Download `anvil-gui.exe` from the [Releases](https://github.com/thiagoOpaula/anvil/releases) page, or build from source:
 
@@ -210,6 +212,8 @@ Anvil is designed with safety as a core principle:
 | 🔐 **SHA1 verification** | Every download hash-checked — no corruption |
 | ⚠️ **Conflict detection** | Warns about incompatible dependency combos |
 | 🛡️ **Deprecation warnings** | Alerts on archived/withdrawn Modrinth projects |
+| 📤 **Export mod list** | Save scan results as CSV, Markdown, or JSON |
+| 📥 **Import mod list** | Load an exported list and download all mods at once |
 
 ### Power User Features
 
@@ -229,6 +233,9 @@ Anvil is designed with safety as a core principle:
 | 🎮 **Interactive CLI** | Fuzzy-select menus for version and loader when no flags given |
 | 🌍 **Cross-platform** | Windows / Linux / macOS — auto-detects mods folder |
 | 📦 **Single binary** | ~7 MB CLI, ~14 MB GUI — no Python, no JRE, no runtime |
+| 🎨 **Dark mode** | Light/dark theme toggle in GUI Settings |
+| ⌨️ **Keyboard shortcuts** | `Ctrl+R` scan, `Ctrl+U` check updates in GUI |
+| 🔔 **App update check** | Anvil checks for new releases on startup — never miss a version |
 
 <br>
 
