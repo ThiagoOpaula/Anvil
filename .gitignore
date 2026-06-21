@@ -3,5 +3,9 @@
 __pycache__/
 **/*.rs.bk
 *.pdb
-.claude/worktrees/
-.claude/scheduled_tasks.json
+# Ignore everything in .claude/ by default
+.claude/*
+# But track project-level config and reusable workflows
+!.claude/settings.json
+!.claude/workflows/
+!.claude/workflows/**
