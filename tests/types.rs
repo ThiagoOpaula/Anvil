@@ -132,6 +132,8 @@ fn config_default_all_none() {
     assert!(config.include.is_none());
     assert!(config.exclude.is_none());
     assert!(config.max_updates.is_none());
+    assert!(config.profiles.is_empty());
+    assert!(config.active_profile.is_none());
 }
 
 #[test]
@@ -147,6 +149,66 @@ game_version = "1.21"
     assert_eq!(config.backup, Some(false));
     assert_eq!(config.loader, Some("fabric".to_string()));
     assert_eq!(config.game_version, Some("1.21".to_string()));
+}
+
+#[test]
+fn config_deserialize_profiles_array_vector() {
+    let toml_str = r#"
+active_profile = "prism"
+
+[[profiles]]
+name = "prism"
+mods_dir = "/home/u/.local/share/PrismLauncher/instances/one/minecraft/mods"
+
+[[profiles]]
+name = "vanilla"
+mods_dir = "/home/u/.minecraft/mods"
+loader = "fabric"
+game_version = "1.21.1"
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    assert_eq!(config.active_profile.as_deref(), Some("prism"));
+    assert_eq!(config.profiles.len(), 2);
+    assert_eq!(config.profiles[0].name, "prism");
+    assert_eq!(
+        config.profiles[0].mods_dir,
+        std::path::PathBuf::from("/home/u/.local/share/PrismLauncher/instances/one/minecraft/mods")
+    );
+    assert!(config.profiles[0].loader.is_none());
+    assert_eq!(config.profiles[1].name, "vanilla");
+    assert_eq!(config.profiles[1].loader.as_deref(), Some("fabric"));
+    assert_eq!(config.profiles[1].game_version.as_deref(), Some("1.21.1"));
+}
+
+#[test]
+fn config_missing_profiles_key_deserializes() {
+    let config: Config = toml::from_str(r#"mods_dir = "/mods""#).unwrap();
+    assert!(config.profiles.is_empty());
+    assert!(config.active_profile.is_none());
+}
+
+#[test]
+fn profile_loader_and_game_version_default_to_none() {
+    let profile: Profile = toml::from_str(
+        r#"
+name = "main"
+mods_dir = "/mods"
+"#,
+    )
+    .unwrap();
+    assert_eq!(profile.name, "main");
+    assert!(profile.loader.is_none());
+    assert!(profile.game_version.is_none());
+}
+
+#[test]
+fn config_without_profiles_serializes_without_the_new_keys() {
+    // `skip_serializing_if` keeps a profile-less config byte-identical to the
+    // pre-profiles output; losing it would make every GUI save write empty
+    // `profiles`/`active_profile` keys.
+    let toml_str = toml::to_string_pretty(&Config::default()).unwrap();
+    assert!(!toml_str.contains("profiles"), "got: {}", toml_str);
+    assert!(!toml_str.contains("active_profile"), "got: {}", toml_str);
 }
 
 #[test]

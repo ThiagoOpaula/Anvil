@@ -29,6 +29,9 @@ cargo run -- --dry-run
 cargo run -- --mods-dir "C:\path\to\mods"
 cargo run -- --game-version 1.21.10 --dry-run
 cargo run -- list
+cargo run -- profiles
+cargo run -- profiles --detect
+cargo run -- --profile prism --dry-run
 cargo run -- rollback
 
 # Test & lint
@@ -39,15 +42,16 @@ cargo clippy --features gui
 
 ## Architecture
 
-**17 modules** under `src/`, compiled as a library (`src/lib.rs`) + two binary entries (`src/main.rs`, `src/bin/gui.rs`):
+**18 modules** under `src/`, compiled as a library (`src/lib.rs`) + two binary entries (`src/main.rs`, `src/bin/gui.rs`):
 
 | Module | Purpose |
 |--------|-------|
-| `lib.rs` | Crate root: all `pub mod` declarations, re-exports, `run_list()` |
+| `lib.rs` | Crate root: all `pub mod` declarations, re-exports, `run_list()`, `run_profiles()` |
 | `main.rs` | CLI binary entry point: parse, tracing, interactive prompts, dispatch |
-| `cli.rs` | clap derive CLI — 3 subcommands, 15+ flags |
-| `config.rs` | TOML config loading + CLI override merge |
+| `cli.rs` | clap derive CLI — 4 subcommands, 15 flags |
+| `config.rs` | TOML config loading + CLI override merge, profile resolution, GUI settings merge |
 | `paths.rs` | Cross-platform mods/config/cache dirs (uses `dirs` crate) |
+| `discover.rs` | Launcher mods-folder discovery (Prism, MultiMC, Modrinth App, ATLauncher, GDLauncher, Flatpak) |
 | `types.rs` | All shared structs, enums, traits (`ApiClient`, `ProgressRenderer`) |
 | `error.rs` | `thiserror` Error enum + `Result` alias |
 | `api.rs` | `ModrinthApi`: rate-limited (~4 req/s), retry, streaming downloads |
@@ -62,6 +66,17 @@ cargo clippy --features gui
 | `gui/` | egui/eframe desktop GUI — app, worker, progress, tabs |
 
 **Lib+bin structure:** The crate follows the standard Rust pattern — `src/lib.rs` declares all modules as `pub`, while `src/main.rs` and `src/bin/gui.rs` are thin wrappers that call into the library.
+
+**Config is compiler-protected — `Config` is not.** `ResolvedConfig` has no `Default`, so a new field breaks every struct literal until it is filled in. `Config` derives `Default` and every field is `#[serde(default)]`, so a forgotten field compiles silently and deserialises to `None`/empty. Add new `Config` fields to `tests/types.rs` by hand.
+
+**Resolution precedence** lives in one place, `config::resolve_from_file`, called by both binaries:
+
+| field | order |
+|---|---|
+| `mods_dir` | `--mods-dir` > `--profile NAME` > `active_profile` > `config.toml` > platform default |
+| `loader` / `game_version` | CLI flag > selected profile > `config.toml` > auto-detect |
+
+An unknown `--profile` is a hard error; a stale `active_profile` only warns, so a hand-edited config never bricks the CLI.
 
 **Traits decouple modules:**
 - `ApiClient` (async-trait) — 6 methods. Implemented by `ModrinthApi`, `MockApi` for tests
@@ -107,6 +122,7 @@ All other modules test only public items. Their tests live in `tests/` as proper
 | `tests/locking.rs` | `anvil::locking` |
 | `tests/types.rs` | `anvil::types` |
 | `tests/config.rs` | `anvil::config` |
+| `tests/discover.rs` | `anvil::discover` |
 | `tests/backup.rs` | `anvil::backup` |
 | `tests/error.rs` | `anvil::error` |
 | `tests/scanner.rs` | `anvil::scanner` |
@@ -133,9 +149,9 @@ Each integration test file imports the module under test via `use anvil::module_
 ### Verification
 
 ```bash
-cargo test                   # All 130+ tests pass
-cargo clippy                 # Clean (CLI)
-cargo clippy --features gui  # Clean (GUI)
+cargo test                   # All 250+ tests pass
+cargo clippy                 # No NEW warnings (11 pre-existing: types.rs, backup.rs)
+cargo clippy --features gui  # Same baseline; touch a src/gui/** file to defeat caching
 cargo build --release        # Binary compiles
 cargo build --release --features gui  # Both binaries compile
 ```

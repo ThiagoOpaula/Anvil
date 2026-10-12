@@ -5,7 +5,7 @@ mod common;
 
 use anvil::deps;
 use anvil::types::{Dependency, DependencyType, IdentifiedMod};
-use common::helpers::{make_identified_mod, make_version};
+use common::helpers::{make_identified_mod, make_version, sha1_hex};
 
 fn dep(project_id: &str, kind: DependencyType) -> Dependency {
     Dependency {
@@ -276,6 +276,172 @@ fn format_issues_lists_missing_and_incompat() {
     assert!(text.contains("Create requires FLYWHEEL"), "{}", text);
     assert!(text.contains("Incompatibilities (both installed):"), "{}", text);
     assert!(text.contains("Mod A conflicts with Mod B"), "{}", text);
+}
+
+// ── resolve_display_names() ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn resolve_display_names_fills_missing_titles() {
+    use common::mocks::MockApi;
+    use anvil::cache::ApiCache;
+    use common::helpers::make_project;
+
+    let mods = vec![with_deps(
+        make_identified_mod("create.jar", "CCC", "Create", "0.5.1"),
+        vec![dep("FLYWHEEL", DependencyType::Required)],
+    )];
+
+    let mut graph = deps::build(&mods);
+    assert!(graph.missing[0].to_name.is_none());
+
+    let api = MockApi::new();
+    api.set_project("FLYWHEEL", make_project("FLYWHEEL", "flywheel", "Flywheel"));
+    let cache = ApiCache::new();
+
+    deps::resolve_display_names(&mut graph, &api, &cache).await;
+
+    assert_eq!(graph.missing[0].to_name.as_deref(), Some("Flywheel"));
+    assert_eq!(graph.edges[0].to_name.as_deref(), Some("Flywheel"));
+
+    // Issues and tree now show the human title.
+    let issues = deps::format_issues(&graph).expect("issues");
+    assert!(issues.iter().any(|l| l.contains("Create requires Flywheel")));
+    let tree = deps::format_tree(&mods, &graph).join("\n");
+    assert!(tree.contains("Flywheel (required) ✗ MISSING"), "tree:\n{}", tree);
+}
+
+#[tokio::test]
+async fn resolve_display_names_keeps_id_when_lookup_fails() {
+    use common::mocks::MockApi;
+    use anvil::cache::ApiCache;
+
+    let mods = vec![with_deps(
+        make_identified_mod("create.jar", "CCC", "Create", "0.5.1"),
+        vec![dep("GHOST_PROJECT", DependencyType::Required)],
+    )];
+
+    let mut graph = deps::build(&mods);
+    let api = MockApi::new(); // project_map empty → get_project errors
+    let cache = ApiCache::new();
+
+    deps::resolve_display_names(&mut graph, &api, &cache).await;
+
+    assert!(graph.missing[0].to_name.is_none());
+    let issues = deps::format_issues(&graph).expect("issues");
+    assert!(issues.iter().any(|l| l.contains("Create requires GHOST_PROJECT")));
+}
+
+// ── install_missing() ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn install_missing_downloads_required_dep() {
+    use common::mocks::{MockApi, MockProgress};
+    use common::helpers::{make_file, make_project, setup_temp_mods_dir};
+    use anvil::cache::ApiCache;
+    use std::fs;
+
+    let content = b"flywheel-jar-bytes";
+    let sha1 = sha1_hex(content);
+
+    let dir = setup_temp_mods_dir(&[("create-0.5.jar", b"create-bytes")]);
+    let mods = vec![with_deps(
+        make_identified_mod("create-0.5.jar", "CCC", "Create", "0.5.1"),
+        vec![dep("FLYWHEEL", DependencyType::Required)],
+    )];
+    let graph = deps::build(&mods);
+
+    let api = MockApi::new();
+    api.set_project("FLYWHEEL", make_project("FLYWHEEL", "flywheel", "Flywheel"));
+    api.set_project_versions(
+        "FLYWHEEL",
+        vec![make_version(
+            "ver-fw",
+            "FLYWHEEL",
+            "Flywheel",
+            "0.10.0",
+            vec![make_file("https://example.test/fw.jar", "flywheel-0.10.0.jar", sha1.as_str())],
+        )],
+    );
+    api.set_download_content(content.to_vec(), None);
+
+    let cache = ApiCache::new();
+    let progress = MockProgress::new();
+
+    let outcome = deps::install_missing(&dir, &graph, &api, &cache, Some("fabric"), Some("1.21"), &progress)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.installed.len(), 1);
+    assert_eq!(outcome.installed[0].name, "Flywheel");
+    assert_eq!(outcome.installed[0].filename, "flywheel-0.10.0.jar");
+    assert!(outcome.failed.is_empty());
+    assert!(dir.join("flywheel-0.10.0.jar").exists());
+    assert_eq!(api.download_calls.lock().unwrap().len(), 1);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn install_missing_skips_existing_file_and_still_walks_transitive() {
+    use common::mocks::{MockApi, MockProgress};
+    use common::helpers::{make_file, make_project, setup_temp_mods_dir};
+    use anvil::cache::ApiCache;
+    use std::fs;
+
+    let content = b"indium-jar";
+    let sha1 = sha1_hex(content);
+
+    let dir = setup_temp_mods_dir(&[
+        ("create-0.5.jar", b"create-bytes"),
+        ("flywheel-0.10.0.jar", b"already-there"),
+    ]);
+
+    let mods = vec![with_deps(
+        make_identified_mod("create-0.5.jar", "CCC", "Create", "0.5.1"),
+        vec![dep("FLYWHEEL", DependencyType::Required)],
+    )];
+    let graph = deps::build(&mods);
+
+    let mut fw = make_version(
+        "ver-fw",
+        "FLYWHEEL",
+        "Flywheel",
+        "0.10.0",
+        vec![make_file("https://example.test/fw.jar", "flywheel-0.10.0.jar", "00")],
+    );
+    fw.dependencies = vec![dep("INDIUM", DependencyType::Required)];
+
+    let api = MockApi::new();
+    api.set_project("FLYWHEEL", make_project("FLYWHEEL", "flywheel", "Flywheel"));
+    api.set_project("INDIUM", make_project("INDIUM", "indium", "Indium"));
+    api.set_project_versions("FLYWHEEL", vec![fw]);
+    api.set_project_versions(
+        "INDIUM",
+        vec![make_version(
+            "ver-in",
+            "INDIUM",
+            "Indium",
+            "1.0.0",
+            vec![make_file("https://example.test/in.jar", "indium-1.0.0.jar", sha1.as_str())],
+        )],
+    );
+    api.set_download_content(content.to_vec(), None);
+
+    let cache = ApiCache::new();
+    let progress = MockProgress::new();
+
+    let outcome = deps::install_missing(&dir, &graph, &api, &cache, None, None, &progress)
+        .await
+        .unwrap();
+
+    // Flywheel already on disk → not re-downloaded; Indium (transitive) is.
+    assert!(outcome.installed.iter().all(|d| d.project_id != "FLYWHEEL"));
+    assert!(outcome.installed.iter().any(|d| d.project_id == "INDIUM"));
+    // Only Indium was downloaded.
+    assert_eq!(api.download_calls.lock().unwrap().len(), 1);
+    assert!(dir.join("indium-1.0.0.jar").exists());
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── edges_for() ─────────────────────────────────────────────────────────

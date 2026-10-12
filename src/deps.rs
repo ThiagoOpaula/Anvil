@@ -5,8 +5,11 @@
 //! per-mod tree for the CLI.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 
-use crate::types::{DependencyType, IdentifiedMod, ModVersion};
+use crate::cache::ApiCache;
+use crate::error::{Error, Result};
+use crate::types::{ApiClient, DependencyType, IdentifiedMod, ModVersion, ProgressRenderer};
 
 // ── Graph types ─────────────────────────────────────────────────────────
 
@@ -19,8 +22,11 @@ pub struct DepEdge {
     pub from_name: String,
     /// Project id of the dependency target.
     pub to_project_id: String,
-    /// Display name of the target when it is installed; `None` when missing.
+    /// Display name of the target when known (installed or resolved from
+    /// Modrinth for a missing project); `None` when unresolved.
     pub to_name: Option<String>,
+    /// Whether the target project is present among the identified mods.
+    pub installed: bool,
     /// How the dependent declares the relationship.
     pub kind: DependencyType,
 }
@@ -31,6 +37,9 @@ pub struct MissingDep {
     pub dependent_project_id: String,
     pub dependent_name: String,
     pub to_project_id: String,
+    /// Display name of the target when it can be resolved from Modrinth;
+    /// `None` when the project lookup fails (deleted / private / offline).
+    pub to_name: Option<String>,
     pub kind: DependencyType,
 }
 
@@ -139,6 +148,7 @@ pub fn build(mods: &[IdentifiedMod]) -> DepGraph {
                 from_name: from_name.to_string(),
                 to_project_id: to_id.to_string(),
                 to_name: to_name.clone(),
+                installed: target.is_some(),
                 kind: dep.dependency_type,
             });
 
@@ -148,6 +158,7 @@ pub fn build(mods: &[IdentifiedMod]) -> DepGraph {
                         dependent_project_id: from_id.to_string(),
                         dependent_name: from_name.to_string(),
                         to_project_id: to_id.to_string(),
+                        to_name: None,
                         kind: dep.dependency_type,
                     });
                 }
@@ -270,7 +281,7 @@ pub fn format_tree(mods: &[IdentifiedMod], graph: &DepGraph) -> Vec<String> {
         for (i, edge) in edges.iter().enumerate() {
             let branch = if i + 1 == total { "└─" } else { "├─" };
             let label = edge.to_name.as_deref().unwrap_or(&edge.to_project_id);
-            let status = if edge.to_name.is_some() {
+            let status = if edge.installed {
                 "✓"
             } else if edge.kind == DependencyType::Required {
                 "✗ MISSING"
@@ -312,10 +323,8 @@ pub fn format_issues(graph: &DepGraph) -> Option<Vec<String>> {
     if !graph.missing.is_empty() {
         lines.push(String::from("Missing required dependencies:"));
         for miss in &graph.missing {
-            lines.push(format!(
-                "  ! {} requires {}",
-                miss.dependent_name, miss.to_project_id
-            ));
+            let label = miss.to_name.as_deref().unwrap_or(&miss.to_project_id);
+            lines.push(format!("  ! {} requires {}", miss.dependent_name, label));
         }
     }
 
@@ -333,6 +342,375 @@ pub fn format_issues(graph: &DepGraph) -> Option<Vec<String>> {
     }
 
     Some(lines)
+}
+
+// ── Display-name resolution ─────────────────────────────────────────────
+
+/// Fill in display names for edges whose target is not installed.
+///
+/// Looks up each unique unresolved project id via the project cache or
+/// `GET /project/{id}`. Failures leave `to_name` as `None` so callers can
+/// fall back to the raw project id.
+pub async fn resolve_display_names(
+    graph: &mut DepGraph,
+    api: &dyn ApiClient,
+    cache: &ApiCache,
+) {
+    use futures::stream::{self, StreamExt};
+
+    let unique_ids: Vec<String> = {
+        let mut seen = HashSet::new();
+        let mut ids = Vec::new();
+        for edge in &graph.edges {
+            if edge.to_name.is_none()
+                && seen.insert(edge.to_project_id.as_str())
+            {
+                ids.push(edge.to_project_id.clone());
+            }
+        }
+        for miss in &graph.missing {
+            if miss.to_name.is_none()
+                && seen.insert(miss.to_project_id.as_str())
+            {
+                ids.push(miss.to_project_id.clone());
+            }
+        }
+        ids
+    };
+
+    if unique_ids.is_empty() {
+        return;
+    }
+
+    let lookups: Vec<(String, Option<String>)> = stream::iter(unique_ids)
+        .map(|id| async move {
+            let name = match cache.get_project(&id) {
+                Ok(Some(p)) => Some(p.title),
+                _ => match api.get_project(&id).await {
+                    Ok(p) => {
+                        let _ = cache.set_project(&id, &p);
+                        Some(p.title)
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            project_id = %id,
+                            error = %e,
+                            "could not resolve dependency display name"
+                        );
+                        None
+                    }
+                },
+            };
+            (id, name)
+        })
+        .buffer_unordered(4)
+        .collect()
+        .await;
+
+    for (id, name) in lookups {
+        let Some(name) = name else { continue };
+        for edge in graph
+            .edges
+            .iter_mut()
+            .filter(|e| e.to_project_id == id && e.to_name.is_none())
+        {
+            edge.to_name = Some(name.clone());
+        }
+        for miss in graph
+            .missing
+            .iter_mut()
+            .filter(|m| m.to_project_id == id && m.to_name.is_none())
+        {
+            miss.to_name = Some(name.clone());
+        }
+    }
+}
+
+// ── Install missing dependencies ────────────────────────────────────────
+
+/// Result of one successfully downloaded dependency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledDep {
+    pub project_id: String,
+    pub name: String,
+    pub version: String,
+    pub filename: String,
+}
+
+/// Result of [`install_missing`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstallOutcome {
+    pub installed: Vec<InstalledDep>,
+    /// `(project_id, reason)` pairs that could not be installed.
+    pub failed: Vec<(String, String)>,
+}
+
+/// Options for [`install_projects`].
+#[derive(Debug, Clone, Default)]
+pub struct InstallOptions<'a> {
+    /// Preferred mod loader filter (e.g. `"fabric"`).
+    pub loader: Option<&'a str>,
+    /// Preferred Minecraft version filter (e.g. `"1.21.1"`).
+    pub game_version: Option<&'a str>,
+    /// Project ids already present among identified mods — never downloaded.
+    pub already_installed: HashSet<String>,
+}
+
+impl InstallOutcome {
+    pub fn is_empty(&self) -> bool {
+        self.installed.is_empty() && self.failed.is_empty()
+    }
+}
+
+/// Download every missing **required** dependency (and their transitive
+/// required deps) into `mods_dir`.
+///
+/// For each project, the newest version matching `loader` / `game_version`
+/// is preferred; if none match, the newest overall version is used. Files
+/// whose target filename already exists in `mods_dir` are skipped.
+pub async fn install_missing(
+    mods_dir: &Path,
+    graph: &DepGraph,
+    api: &dyn ApiClient,
+    cache: &ApiCache,
+    loader: Option<&str>,
+    game_version: Option<&str>,
+    progress: &dyn ProgressRenderer,
+) -> Result<InstallOutcome> {
+    let project_ids: Vec<String> = {
+        let mut seen = HashSet::new();
+        graph
+            .missing
+            .iter()
+            .filter(|m| m.kind == DependencyType::Required)
+            .filter_map(|m| {
+                if seen.insert(m.to_project_id.as_str()) {
+                    Some(m.to_project_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    // Ids already installed in the folder (so we never re-download them).
+    let installed_ids: HashSet<String> = graph
+        .edges
+        .iter()
+        .filter(|e| e.installed)
+        .map(|e| e.to_project_id.clone())
+        .collect();
+
+    install_projects(
+        mods_dir,
+        project_ids,
+        InstallOptions {
+            loader,
+            game_version,
+            already_installed: installed_ids,
+        },
+        api,
+        cache,
+        progress,
+    )
+    .await
+}
+
+/// Download the given project ids (plus transitive required deps) into
+/// `mods_dir`.
+pub async fn install_projects(
+    mods_dir: &Path,
+    project_ids: Vec<String>,
+    options: InstallOptions<'_>,
+    api: &dyn ApiClient,
+    cache: &ApiCache,
+    progress: &dyn ProgressRenderer,
+) -> Result<InstallOutcome> {
+    let InstallOptions {
+        loader,
+        game_version,
+        already_installed,
+    } = options;
+    let mut queue = project_ids;
+    let mut installed_ids = already_installed;
+    let mut outcome = InstallOutcome::default();
+    let mut visited: HashSet<String> = HashSet::new();
+
+    if queue.is_empty() {
+        return Ok(outcome);
+    }
+
+    progress.start_phase("Installing dependencies", queue.len() as u64);
+
+    while let Some(project_id) = queue.pop() {
+        if !visited.insert(project_id.clone()) {
+            progress.increment(1);
+            continue;
+        }
+
+        match install_one(
+            mods_dir,
+            &project_id,
+            api,
+            cache,
+            loader,
+            game_version,
+        )
+        .await
+        {
+            Ok((deps, Some(meta))) => {
+                for dep_id in deps {
+                    if !visited.contains(&dep_id) && !installed_ids.contains(&dep_id) {
+                        queue.push(dep_id);
+                    }
+                }
+                tracing::info!(
+                    project_id = %meta.project_id,
+                    name = %meta.name,
+                    version = %meta.version,
+                    "installed dependency"
+                );
+                installed_ids.insert(project_id);
+                outcome.installed.push(meta);
+            }
+            // Already on disk — nothing to download, but still walk its deps.
+            Ok((deps, None)) => {
+                for dep_id in deps {
+                    if !visited.contains(&dep_id) && !installed_ids.contains(&dep_id) {
+                        queue.push(dep_id);
+                    }
+                }
+                installed_ids.insert(project_id);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    project_id = %project_id,
+                    error = %e,
+                    "failed to install dependency"
+                );
+                outcome.failed.push((project_id, e.to_string()));
+            }
+        }
+        progress.increment(1);
+    }
+
+    progress.finish_phase();
+    Ok(outcome)
+}
+
+/// Download one project's matching version into `mods_dir`.
+///
+/// Always returns the transitive required project ids. The second element
+/// is `None` when the target JAR is already on disk (nothing downloaded).
+async fn install_one(
+    mods_dir: &Path,
+    project_id: &str,
+    api: &dyn ApiClient,
+    cache: &ApiCache,
+    loader: Option<&str>,
+    game_version: Option<&str>,
+) -> Result<(Vec<String>, Option<InstalledDep>)> {
+    let loaders: Vec<String> = loader.map(|l| vec![l.to_string()]).unwrap_or_default();
+    let game_versions: Vec<String> = game_version
+        .map(|g| vec![g.to_string()])
+        .unwrap_or_default();
+
+    // Prefer a filtered version; fall back to unfiltered if nothing matches.
+    let mut versions = api
+        .get_project_versions(project_id, &loaders, &game_versions)
+        .await?;
+    if versions.is_empty() && (!loaders.is_empty() || !game_versions.is_empty()) {
+        versions = api.get_project_versions(project_id, &[], &[]).await?;
+    }
+
+    let version = versions.into_iter().next().ok_or_else(|| {
+        Error::Other(format!(
+            "no versions available for project {}",
+            project_id
+        ))
+    })?;
+
+    let file = version
+        .files
+        .iter()
+        .find(|f| f.primary)
+        .or_else(|| version.files.first())
+        .ok_or_else(|| {
+            Error::Other(format!(
+                "version {} of {} has no downloadable files",
+                version.version_number, project_id
+            ))
+        })?;
+
+    let dest = mods_dir.join(&file.filename);
+    if dest.exists() {
+        return Ok((transitive_required(&version), None));
+    }
+
+    let progress_cb = |downloaded: u64, total: Option<u64>| {
+        if let Some(t) = total {
+            tracing::debug!("dep download: {} / {} bytes", downloaded, t);
+        } else {
+            tracing::debug!("dep download: {} bytes", downloaded);
+        }
+    };
+
+    let actual_sha1 = api.download_file(&file.url, &dest, &progress_cb).await?;
+    if actual_sha1 != file.hashes.sha1 {
+        let _ = std::fs::remove_file(&dest);
+        return Err(Error::Other(format!(
+            "SHA1 mismatch for {}: expected {}, got {}",
+            file.filename, file.hashes.sha1, actual_sha1
+        )));
+    }
+
+    let name = display_name_for(project_id, &version, api, cache).await;
+    Ok((
+        transitive_required(&version),
+        Some(InstalledDep {
+            project_id: project_id.to_string(),
+            name,
+            version: version.version_number.clone(),
+            filename: file.filename.clone(),
+        }),
+    ))
+}
+
+/// Required dependency project ids declared by `version`.
+fn transitive_required(version: &ModVersion) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for dep in &version.dependencies {
+        if dep.dependency_type != DependencyType::Required {
+            continue;
+        }
+        if let Some(id) = dep.project_id.as_deref()
+            && seen.insert(id)
+        {
+            out.push(id.to_string());
+        }
+    }
+    out
+}
+
+/// Best-effort display name: version title, then project cache/API.
+async fn display_name_for(
+    project_id: &str,
+    version: &ModVersion,
+    api: &dyn ApiClient,
+    cache: &ApiCache,
+) -> String {
+    // Prefer the human title from project metadata when available.
+    if let Ok(Some(p)) = cache.get_project(project_id) {
+        return p.title;
+    }
+    match api.get_project(project_id).await {
+        Ok(p) => {
+            let _ = cache.set_project(project_id, &p);
+            p.title
+        }
+        Err(_) => version.name.clone(),
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

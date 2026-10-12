@@ -40,7 +40,16 @@ async fn main() -> anyhow::Result<()> {
 
     // ── 3. Load config file ──────────────────────────────────────────────
     let config_path = paths::config_dir().join("config.toml");
-    let mut resolved = config::resolve(&cli, Some(&config_path))?;
+    let mut resolved = match config::resolve(&cli, Some(&config_path)) {
+        Ok(resolved) => resolved,
+        Err(e) => {
+            // Pause *before* exiting: an .exe launched by double-click would
+            // otherwise vanish before the message can be read.
+            tracing::error!("{}", e);
+            anvil::interactive::pause_before_exit();
+            std::process::exit(1);
+        }
+    };
 
     // ── 4. Build API client, cache, and progress renderer ────────────────
     let api = ModrinthApi::new()?;
@@ -48,8 +57,12 @@ async fn main() -> anyhow::Result<()> {
     let progress = output::ConsoleProgress::new();
 
     // ── 4b. Interactive version/loader selection ─────────────────────────
-    // Only prompt for update (default) and list subcommands, not rollback.
-    let needs_prompts = !matches!(cli.command, Some(Command::Rollback));
+    // Positive list: only the commands that actually consume a resolved
+    // loader/game version prompt for one.
+    let needs_prompts = matches!(
+        cli.command,
+        Some(Command::Update(_)) | Some(Command::List(_)) | None
+    );
     if needs_prompts
         && let Err(e) = anvil::interactive::prompt_if_needed(&mut resolved, &api).await
     {
@@ -77,7 +90,20 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Some(Command::List(args)) => {
-            anvil::run_list(&resolved, &api, &cache, &progress, args.deps).await?;
+            anvil::run_list(
+                &resolved,
+                &api,
+                &cache,
+                &progress,
+                args.deps,
+                args.install_deps,
+                args.yes,
+            )
+            .await?;
+        }
+
+        Some(Command::Profiles(args)) => {
+            anvil::run_profiles(&resolved, args.detect, &progress)?;
         }
 
         Some(Command::Update(_)) | None => {

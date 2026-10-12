@@ -310,6 +310,41 @@ pub struct Config {
     /// Whether to use the dark theme in the GUI.
     #[serde(default)]
     pub dark_mode: Option<bool>,
+
+    /// Named mods folders the user can switch between.
+    ///
+    /// Deliberately a bare `Vec` rather than `Option<Vec<Profile>>`: absent and
+    /// empty are semantically identical, so `Option` would only force
+    /// `.unwrap_or_default()` at every use.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<Profile>,
+
+    /// Name of the profile to use when `--profile` is not passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_profile: Option<String>,
+}
+
+/// A named mods folder, persisted under `[[profiles]]` in `config.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Profile {
+    /// Unique display name; how the user refers to this profile.
+    ///
+    /// No `#[serde(default)]` — a `[[profiles]]` entry missing this fails
+    /// loudly at load time instead of becoming an unreachable profile.
+    pub name: String,
+
+    /// Absolute path to this profile's mods folder.
+    ///
+    /// No `#[serde(default)]`, for the same reason as `name`.
+    pub mods_dir: PathBuf,
+
+    /// Forced mod loader for this profile. `None` = fall through to config/auto.
+    #[serde(default)]
+    pub loader: Option<String>,
+
+    /// Target Minecraft version for this profile. `None` = fall through.
+    #[serde(default)]
+    pub game_version: Option<String>,
 }
 
 // ── Filter options (derived from CLI + Config) ─────────────────────────

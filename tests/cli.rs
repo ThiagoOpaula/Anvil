@@ -124,6 +124,50 @@ fn cli_rollback_subcommand() {
 }
 
 #[test]
+fn cli_profile_flag_is_global() {
+    let cli = Cli::parse_from(["anvil", "--profile", "prism"]);
+    assert_eq!(cli.profile.as_deref(), Some("prism"));
+
+    let cli = Cli::parse_from(["anvil"]);
+    assert!(cli.profile.is_none());
+}
+
+#[test]
+fn cli_profile_flag_accepted_after_subcommand() {
+    // `global = true` means the flag propagates into subcommands.
+    let cli = Cli::parse_from(["anvil", "update", "--profile", "main"]);
+    assert_eq!(cli.profile.as_deref(), Some("main"));
+    assert!(matches!(cli.command, Some(Command::Update(_))));
+}
+
+#[test]
+fn cli_profiles_subcommand() {
+    let cli = Cli::parse_from(["anvil", "profiles"]);
+    match cli.command {
+        Some(Command::Profiles(args)) => assert!(!args.detect),
+        _ => panic!("expected Profiles variant"),
+    }
+}
+
+#[test]
+fn cli_profiles_detect_flag() {
+    let cli = Cli::parse_from(["anvil", "profiles", "--detect"]);
+    match cli.command {
+        Some(Command::Profiles(args)) => assert!(args.detect),
+        _ => panic!("expected Profiles variant"),
+    }
+}
+
+#[test]
+fn cli_profiles_detect_defaults_false() {
+    let cli = Cli::parse_from(["anvil", "profiles", "--profile", "main"]);
+    match cli.command {
+        Some(Command::Profiles(args)) => assert!(!args.detect),
+        _ => panic!("expected Profiles variant"),
+    }
+}
+
+#[test]
 fn cli_verbose_and_quiet_conflict() {
     // clap should reject having both --verbose and --quiet
     let result = Cli::try_parse_from(["anvil", "update", "--verbose", "--quiet"]);

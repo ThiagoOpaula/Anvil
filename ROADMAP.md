@@ -14,7 +14,8 @@
 
 - [x] 🌳 **Dependency tree** — visualize which mods depend on which, flag missing/incompatible dependencies, and warn when an update would introduce a conflict
 - [ ] 📦 **Modpack support** — import and update `.mrpack` files
-- [ ] 👥 **Profile system** — switch between multiple mods folders
+- [x] 👥 **Profile system** — switch between multiple mods folders
+- [x] 🐧 **Linux launcher discovery** — find mods folders from Prism, MultiMC, Modrinth App and friends instead of assuming `~/.minecraft`
 - [ ] ⏰ **Scheduled checks** — opt-in daily update notifications
 - [x] 🫱🏽‍🫲🏾 **Share mod list** — export a list of your mods to share with friends
 - [ ] 🖱️ **Drag & drop JARs** — drop a file to identify it instantly

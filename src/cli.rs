@@ -22,6 +22,14 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub mods_dir: Option<PathBuf>,
 
+    /// Use a named profile from config.toml (see `anvil profiles`).
+    ///
+    /// Global so it works on every subcommand. If both this and --mods-dir
+    /// are passed, --mods-dir wins; the profile still supplies loader and
+    /// game version.
+    #[arg(long, global = true, value_name = "NAME")]
+    pub profile: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -35,6 +43,8 @@ pub enum Command {
     List(ListArgs),
     /// Restore mods from the latest backup.
     Rollback,
+    /// List configured profiles and detected mods folders (read-only).
+    Profiles(ProfilesArgs),
 }
 
 // ── Shared flags (update + list) ──────────────────────────────────────────
@@ -112,5 +122,27 @@ pub struct ListArgs {
     /// Show a dependency tree plus missing/incompatible dependency issues.
     #[arg(long)]
     pub deps: bool,
+
+    /// Download missing required dependencies into the mods folder.
+    ///
+    /// Requires `--deps`. Installs the newest version matching the selected
+    /// loader and game version (or the newest overall if nothing matches).
+    /// Transitive required dependencies are installed as well.
+    #[arg(long, requires = "deps")]
+    pub install_deps: bool,
+
+    /// Skip the confirmation prompt before downloading missing dependencies.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+}
+
+// ── Profiles flags ───────────────────────────────────────────────────────
+
+/// Arguments specific to the `profiles` subcommand.
+#[derive(Args)]
+pub struct ProfilesArgs {
+    /// Also probe installed launchers for mods folders.
+    #[arg(long)]
+    pub detect: bool,
 }
 

@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 
 use anvil::cli::Cli;
-use anvil::config::{load, resolve, LogLevel};
+use anvil::config::{LogLevel, SettingsForm, load, merge_settings, resolve};
+use anvil::error::Error;
+use anvil::types::{Config, Profile};
 
 // ── LogLevel ────────────────────────────────────────────────────────
 
@@ -224,4 +226,296 @@ fn resolve_rollback_uses_defaults() {
     let cli = Cli::parse_from(["anvil", "rollback"]);
     let resolved = resolve(&cli, Some(Path::new("/nonexistent/config.toml"))).unwrap();
     assert_eq!(resolved.log_level, LogLevel::Info);
+}
+
+// ── Profiles ────────────────────────────────────────────────────────
+
+/// Write `content` to a fresh `config.toml` in a unique temp dir.
+fn write_config(label: &str, content: &str) -> PathBuf {
+    let dir = unique_temp_dir(label);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    fs::write(&path, content).unwrap();
+    path
+}
+
+const PRISM_CONFIG: &str = r#"
+mods_dir = "/file/mods"
+active_profile = "prism"
+
+[[profiles]]
+name = "prism"
+mods_dir = "/profile/mods"
+
+[[profiles]]
+name = "other"
+mods_dir = "/other/mods"
+"#;
+
+#[test]
+fn profile_supplies_mods_dir_when_no_cli_flag() {
+    let path = write_config("cfg-profile", PRISM_CONFIG);
+    let cli = Cli::parse_from(["anvil", "update"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    // active_profile beats the file-level mods_dir.
+    assert_eq!(resolved.mods_dir, PathBuf::from("/profile/mods"));
+    assert_eq!(resolved.active_profile.as_deref(), Some("prism"));
+    assert_eq!(resolved.profiles.len(), 2);
+    assert_eq!(resolved.config_path, path);
+}
+
+#[test]
+fn cli_mods_dir_beats_active_profile() {
+    let path = write_config("cfg-cli-mods", PRISM_CONFIG);
+    let cli = Cli::parse_from(["anvil", "update", "--mods-dir", "/cli/mods"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert_eq!(resolved.mods_dir, PathBuf::from("/cli/mods"));
+}
+
+#[test]
+fn profile_flag_beats_active_profile_and_file_mods_dir() {
+    let path = write_config("cfg-profile-flag", PRISM_CONFIG);
+    let cli = Cli::parse_from(["anvil", "update", "--profile", "other"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert_eq!(resolved.mods_dir, PathBuf::from("/other/mods"));
+    // active_profile itself is untouched — only the selection changed.
+    assert_eq!(resolved.active_profile.as_deref(), Some("prism"));
+}
+
+#[test]
+fn missing_profile_flag_is_config_error() {
+    let path = write_config("cfg-missing-profile", PRISM_CONFIG);
+    let cli = Cli::parse_from(["anvil", "update", "--profile", "nope"]);
+    let err = resolve(&cli, Some(&path)).unwrap_err();
+    assert!(
+        matches!(err, Error::Config(_)),
+        "expected Error::Config, got {:?}",
+        err
+    );
+    assert!(err.to_string().contains("nope"), "message: {}", err);
+}
+
+#[test]
+fn dangling_active_profile_warns_and_falls_back_to_file_mods_dir() {
+    let path = write_config(
+        "cfg-dangling",
+        r#"
+mods_dir = "/file/mods"
+active_profile = "ghost"
+"#,
+    );
+    let cli = Cli::parse_from(["anvil", "update"]);
+    // A leftover active_profile must never make the CLI unusable.
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert_eq!(resolved.mods_dir, PathBuf::from("/file/mods"));
+}
+
+#[test]
+fn dangling_active_profile_falls_back_to_default_when_no_file_mods_dir() {
+    let path = write_config("cfg-dangling-default", r#"active_profile = "ghost""#);
+    let cli = Cli::parse_from(["anvil", "update"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert_eq!(resolved.mods_dir, anvil::paths::default_mods_dir());
+}
+
+#[test]
+fn empty_profiles_array_with_active_profile_falls_back() {
+    let path = write_config(
+        "cfg-empty-profiles",
+        r#"
+mods_dir = "/file/mods"
+active_profile = "ghost"
+profiles = []
+"#,
+    );
+    let cli = Cli::parse_from(["anvil", "update"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert!(resolved.profiles.is_empty());
+    assert_eq!(resolved.mods_dir, PathBuf::from("/file/mods"));
+}
+
+#[test]
+fn profile_loader_and_game_version_precedence() {
+    let path = write_config(
+        "cfg-profile-loader",
+        r#"
+mods_dir = "/file/mods"
+loader = "quilt"
+game_version = "1.20"
+active_profile = "prism"
+
+[[profiles]]
+name = "prism"
+mods_dir = "/profile/mods"
+loader = "fabric"
+game_version = "1.21.1"
+"#,
+    );
+    // No CLI flags: the profile beats the file-level values.
+    let cli = Cli::parse_from(["anvil", "update"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert_eq!(resolved.loader.as_deref(), Some("fabric"));
+    assert_eq!(resolved.game_version.as_deref(), Some("1.21.1"));
+
+    // CLI flags beat the profile.
+    let cli = Cli::parse_from([
+        "anvil",
+        "update",
+        "--loader",
+        "neoforge",
+        "--game-version",
+        "1.22",
+    ]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert_eq!(resolved.loader.as_deref(), Some("neoforge"));
+    assert_eq!(resolved.game_version.as_deref(), Some("1.22"));
+}
+
+#[test]
+fn resolve_resolves_profile_loader_and_game_version() {
+    let path = write_config(
+        "cfg-profile-supply",
+        r#"
+active_profile = "main"
+
+[[profiles]]
+name = "main"
+mods_dir = "/main/mods"
+loader = "fabric"
+game_version = "1.21.1"
+"#,
+    );
+    let cli = Cli::parse_from(["anvil", "update"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert_eq!(resolved.mods_dir, PathBuf::from("/main/mods"));
+    assert_eq!(resolved.loader.as_deref(), Some("fabric"));
+    assert_eq!(resolved.game_version.as_deref(), Some("1.21.1"));
+}
+
+#[test]
+fn duplicate_profile_names_first_match_wins() {
+    let path = write_config(
+        "cfg-duplicate-profiles",
+        r#"
+active_profile = "main"
+
+[[profiles]]
+name = "main"
+mods_dir = "/first/mods"
+
+[[profiles]]
+name = "main"
+mods_dir = "/second/mods"
+"#,
+    );
+    let cli = Cli::parse_from(["anvil", "update"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert_eq!(resolved.mods_dir, PathBuf::from("/first/mods"));
+
+    let cli = Cli::parse_from(["anvil", "update", "--profile", "main"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert_eq!(resolved.mods_dir, PathBuf::from("/first/mods"));
+}
+
+#[test]
+fn no_profiles_config_keeps_existing_precedence() {
+    let path = write_config(
+        "cfg-no-profiles",
+        r#"
+mods_dir = "/file/mods"
+loader = "fabric"
+backup = false
+"#,
+    );
+
+    let cli = Cli::parse_from(["anvil", "update"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert!(resolved.profiles.is_empty());
+    assert!(resolved.active_profile.is_none());
+    assert_eq!(resolved.mods_dir, PathBuf::from("/file/mods"));
+    assert_eq!(resolved.loader.as_deref(), Some("fabric"));
+    assert!(!resolved.backup);
+
+    // A CLI mods_dir still wins, exactly as before profiles existed.
+    let cli = Cli::parse_from(["anvil", "update", "--mods-dir", "/cli/mods"]);
+    let resolved = resolve(&cli, Some(&path)).unwrap();
+    assert_eq!(resolved.mods_dir, PathBuf::from("/cli/mods"));
+}
+
+// ── merge_settings() ────────────────────────────────────────────────
+
+fn sample_profile() -> Profile {
+    Profile {
+        name: "main".into(),
+        mods_dir: PathBuf::from("/main/mods"),
+        loader: Some("fabric".into()),
+        game_version: Some("1.21.1".into()),
+    }
+}
+
+#[test]
+fn merge_settings_preserves_profiles_active_profile_and_unowned_keys() {
+    let existing = Config {
+        mods_dir: Some(PathBuf::from("/old/mods")),
+        verbose: Some(true),
+        quiet: Some(false),
+        dry_run: Some(true),
+        profiles: vec![sample_profile()],
+        active_profile: Some("main".into()),
+        ..Config::default()
+    };
+
+    let form = SettingsForm {
+        mods_dir: Some(PathBuf::from("/main/mods")),
+        backup: false,
+        loader: Some("fabric".into()),
+        game_version: Some("1.21.1".into()),
+        include: None,
+        exclude: None,
+        max_updates: Some(5),
+        confirm: false,
+        changelog: true,
+        dark_mode: true,
+        profiles: vec![sample_profile()],
+        active_profile: Some("main".into()),
+    };
+
+    let merged = merge_settings(existing, &form);
+
+    // Keys the GUI does not own survive.
+    assert_eq!(merged.verbose, Some(true));
+    assert_eq!(merged.quiet, Some(false));
+    assert_eq!(merged.dry_run, Some(true));
+    // Keys it does own are written.
+    assert_eq!(merged.profiles.len(), 1);
+    assert_eq!(merged.active_profile.as_deref(), Some("main"));
+    assert_eq!(merged.backup, Some(false));
+    assert_eq!(merged.max_updates, Some(5));
+    assert_eq!(merged.confirm, Some(false));
+    assert_eq!(merged.changelog, Some(true));
+    assert_eq!(merged.dark_mode, Some(true));
+}
+
+#[test]
+fn merge_settings_does_not_write_mods_dir_while_profile_active() {
+    let existing = Config {
+        mods_dir: Some(PathBuf::from("/global/mods")),
+        ..Config::default()
+    };
+
+    let mut form = SettingsForm {
+        mods_dir: Some(PathBuf::from("/profile/mods")),
+        profiles: vec![sample_profile()],
+        active_profile: Some("main".into()),
+        ..SettingsForm::default()
+    };
+
+    let merged = merge_settings(existing.clone(), &form);
+    assert_eq!(merged.mods_dir, Some(PathBuf::from("/global/mods")));
+
+    // With no active profile the field is GUI-owned again.
+    form.active_profile = None;
+    let merged = merge_settings(existing, &form);
+    assert_eq!(merged.mods_dir, Some(PathBuf::from("/profile/mods")));
 }

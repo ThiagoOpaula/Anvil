@@ -12,6 +12,7 @@ pub mod cache;
 pub mod cli;
 pub mod config;
 pub mod deps;
+pub mod discover;
 pub mod error;
 pub mod filters;
 pub mod interactive;
@@ -36,17 +37,85 @@ use crate::config::ResolvedConfig;
 use crate::error::Result;
 use crate::types::{ApiClient, FilterOpts, IdentifiedMod, ProgressRenderer};
 
+/// List the configured profiles, marking the active one with `*`.
+///
+/// With `detect`, also prints a second table of mods folders found across the
+/// launchers installed on this machine.
+///
+/// Read-only by signature: there is no write path, so the CLI can never
+/// rewrite `config.toml`.
+pub fn run_profiles(
+    config: &ResolvedConfig,
+    detect: bool,
+    progress: &dyn ProgressRenderer,
+) -> Result<()> {
+    if config.profiles.is_empty() {
+        tracing::info!(
+            "No profiles configured. Add [[profiles]] entries to {}.",
+            config.config_path.display()
+        );
+    } else {
+        let headers: &[&str] = &["Name", "Mods Dir", "Exists"];
+        let rows: Vec<Vec<String>> = config
+            .profiles
+            .iter()
+            .map(|profile| {
+                let active = config.active_profile.as_deref() == Some(profile.name.as_str());
+                let is_dir = profile.mods_dir.is_dir();
+                let exists = if is_dir { "yes" } else { "no" };
+                vec![
+                    format!("{}{}", if active { "* " } else { "  " }, profile.name),
+                    profile.mods_dir.display().to_string(),
+                    exists.to_string(),
+                ]
+            })
+            .collect();
+        progress.print_table(headers, &rows);
+    }
+
+    tracing::info!("Mods folder in use: {}", config.mods_dir.display());
+
+    if detect {
+        let found = discover::discover();
+        if found.is_empty() {
+            tracing::info!("No launcher mods folders detected.");
+        } else {
+            let headers: &[&str] = &["Launcher", "Mods Dir", "JARs"];
+            let rows: Vec<Vec<String>> = found
+                .iter()
+                .map(|dir| {
+                    vec![
+                        dir.launcher.label().to_string(),
+                        dir.mods_dir.display().to_string(),
+                        dir.jar_count.to_string(),
+                    ]
+                })
+                .collect();
+            progress.print_table(headers, &rows);
+        }
+    }
+
+    Ok(())
+}
+
 /// Run the scanner pipeline but stop after identification — print a table
 /// of identified mods and exit.  Used by the `list` subcommand.
 ///
 /// When `show_deps` is true, also prints a dependency tree and any
-/// missing-required / incompatibility issues.
+/// missing-required / incompatibility issues. Missing project titles are
+/// resolved from Modrinth so the tree shows names, not raw ids.
+///
+/// When `install_deps` is true (and deps are shown), missing required
+/// dependencies are downloaded into the mods folder after an optional
+/// confirmation prompt (skipped when `assume_yes`).
 pub async fn run_list(
     config: &ResolvedConfig,
     api: &dyn ApiClient,
     cache: &ApiCache,
     progress: &dyn ProgressRenderer,
     show_deps: bool,
+    install_deps: bool,
+    assume_yes: bool,
 ) -> Result<()> {
     // 1. Find JARs
     let jars = scanner::find_jars(&config.mods_dir)?;
@@ -198,7 +267,11 @@ pub async fn run_list(
     //    missing-required checks see every installed mod, not just the
     //    filter-surviving rows).
     if show_deps {
-        let graph = deps::build(&identified);
+        let mut graph = deps::build(&identified);
+
+        // Resolve display names for missing targets (e.g. "Placeholder API"
+        // instead of the raw Modrinth project id).
+        deps::resolve_display_names(&mut graph, api, cache).await;
 
         println!();
         println!("Dependency tree");
@@ -215,6 +288,54 @@ pub async fn run_list(
                 }
             }
             None => println!("No dependency issues found."),
+        }
+
+        // 8. Optionally install missing required dependencies.
+        if install_deps && !graph.missing.is_empty() {
+            let count = graph.missing.len();
+            let question = if count == 1 {
+                let miss = &graph.missing[0];
+                let label = miss.to_name.as_deref().unwrap_or(&miss.to_project_id);
+                format!("Download missing dependency \"{}\"?", label)
+            } else {
+                format!("Download {} missing dependencies?", count)
+            };
+
+            let go = assume_yes || progress.confirm(&question);
+            if go {
+                println!();
+                let outcome = deps::install_missing(
+                    &config.mods_dir,
+                    &graph,
+                    api,
+                    cache,
+                    config.loader.as_deref(),
+                    config.game_version.as_deref(),
+                    progress,
+                )
+                .await?;
+
+                for dep in &outcome.installed {
+                    tracing::info!(
+                        "Installed {} {} as {}",
+                        dep.name, dep.version, dep.filename
+                    );
+                }
+                for (id, reason) in &outcome.failed {
+                    tracing::warn!("Failed to install {}: {}", id, reason);
+                }
+
+                if !outcome.installed.is_empty() {
+                    println!();
+                    println!(
+                        "Installed {} dependency file(s). Run `anvil list --deps` again to refresh the tree.",
+                        outcome.installed.len()
+                    );
+                }
+            } else {
+                println!();
+                println!("Skipped dependency download.");
+            }
         }
     }
 

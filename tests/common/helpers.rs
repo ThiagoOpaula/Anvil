@@ -108,6 +108,9 @@ pub fn make_test_config(mods_dir: &PathBuf) -> ResolvedConfig {
         confirm: true,
         changelog: false,
         dark_mode: false,
+        profiles: Vec::new(),
+        active_profile: None,
+        config_path: PathBuf::from("config.toml"),
     }
 }
 
@@ -130,6 +133,9 @@ pub fn make_config(mods_dir: &Path) -> ResolvedConfig {
         confirm: false,
         changelog: false,
         dark_mode: false,
+        profiles: Vec::new(),
+        active_profile: None,
+        config_path: PathBuf::from("config.toml"),
     }
 }
 

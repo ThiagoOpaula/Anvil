@@ -8,8 +8,9 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::config::ResolvedConfig;
-use crate::types::{IdentifiedMod, ImportedMod, ModOutcome, RunSummary};
+use crate::config::{ResolvedConfig, SettingsForm};
+use crate::discover::DiscoveredModsDir;
+use crate::types::{IdentifiedMod, ImportedMod, ModOutcome, Profile, RunSummary};
 
 use super::worker::{spawn_worker, GuiCommand, WorkerEvent, WorkerHandle};
 
@@ -143,6 +144,12 @@ pub struct AnvilApp {
 
     /// Mods imported from an external mod list file.
     imported_mods: Vec<ImportedMod>,
+
+    // Named mods folders, persisted in config.toml
+    profiles: Vec<Profile>,
+    active_profile: Option<String>,
+    profile_name_input: String,
+    detected_dirs: Vec<DiscoveredModsDir>,
 }
 
 impl AnvilApp {
@@ -212,6 +219,10 @@ impl AnvilApp {
             export_pending: None,
             import_pending: false,
             imported_mods: vec![],
+            profiles: resolved.profiles,
+            active_profile: resolved.active_profile,
+            profile_name_input: String::new(),
+            detected_dirs: vec![],
         }
     }
 
@@ -272,11 +283,12 @@ impl AnvilApp {
                     identified,
                     unknown_count,
                     total_jars,
+                    dep_graph,
                 } => {
                     self.identified_mods = identified;
                     self.unknown_count = unknown_count;
                     self.total_jars = total_jars;
-                    self.dep_graph = Some(crate::deps::build(&self.identified_mods));
+                    self.dep_graph = Some(dep_graph);
                     self.worker_busy = false;
                 }
                 WorkerEvent::UpdatesChecked {
@@ -684,6 +696,11 @@ impl eframe::App for AnvilApp {
             Tab::Rollback => self.render_rollback_tab(ui),
         });
 
+        // Push the settings form into the shared config once per frame, after
+        // every tab has rendered. Idempotent; previously this only ran while
+        // the Updates tab was open, which was an accident of tab order.
+        self.sync_config_to_worker();
+
         // ── Confirmation dialog ──────────────────────────────────────────
         if self.confirm_dialog.is_some() {
             let question = self.confirm_dialog.as_ref().unwrap().question.clone();
@@ -912,10 +929,38 @@ impl AnvilApp {
             })
             .body(|ui| {
                 for miss in missing {
+                    let label = miss.to_name.as_deref().unwrap_or(&miss.to_project_id);
                     ui.colored_label(
                         egui::Color32::RED,
-                        format!("! {} requires {}", miss.dependent_name, miss.to_project_id),
+                        format!("! {} requires {}", miss.dependent_name, label),
                     );
+                }
+
+                // Offer to download the missing required deps in one click.
+                if !missing.is_empty() {
+                    let project_ids: Vec<String> = missing
+                        .iter()
+                        .filter(|m| m.kind == crate::types::DependencyType::Required)
+                        .map(|m| m.to_project_id.clone())
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    if !project_ids.is_empty()
+                        && ui
+                            .add_enabled(
+                                !self.worker_busy,
+                                egui::Button::new(format!(
+                                    "Download {} missing dependenc{}",
+                                    project_ids.len(),
+                                    if project_ids.len() == 1 { "y" } else { "ies" }
+                                )),
+                            )
+                            .clicked()
+                    {
+                        self.worker_busy = true;
+                        self.worker.send_command(GuiCommand::InstallMissingDeps(project_ids));
+                    }
+                    ui.separator();
                 }
                 for pair in incompat {
                     ui.colored_label(
@@ -1147,10 +1192,6 @@ impl AnvilApp {
                 });
         });
 
-        // Sync settings to shared config on every frame so the worker
-        // always has the latest values.
-        self.sync_config_to_worker();
-
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -1293,6 +1334,10 @@ impl AnvilApp {
             }
         });
 
+        // Profiles belong right under the row they control: they *are*
+        // "which folder".
+        self.render_profiles_section(ui);
+
         ui.checkbox(
             &mut self.settings_backup,
             "Create backup before replacing JARs",
@@ -1399,11 +1444,225 @@ impl AnvilApp {
         ui.separator();
 
         if ui.button("Save Settings").clicked() {
-            self.save_settings();
-            self.log_messages.push(LogEntry {
-                message: "Settings saved.".into(),
+            self.sync_config_to_worker();
+            let message = match self.save_settings() {
+                Ok(()) => "Settings saved.".to_string(),
+                Err(e) => format!("Error saving settings: {}", e),
+            };
+            self.log_messages.push(LogEntry { message });
+        }
+    }
+
+    /// Profiles: choose the active folder, edit the list, add detected folders.
+    ///
+    /// Every mutation is staged while rendering and applied afterwards — the
+    /// `ui` closures borrow `self` mutably, so the list cannot be mutated
+    /// inside them.
+    fn render_profiles_section(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.label(egui::RichText::new("Profiles").strong());
+
+        let mut activate: Option<Option<String>> = None;
+        let mut remove: Option<usize> = None;
+        let mut rename: Option<(usize, String)> = None;
+        let mut update_from_current: Option<usize> = None;
+        let mut add_named = false;
+        let mut add_detected: Option<usize> = None;
+
+        ui.horizontal(|ui| {
+            ui.label("Active:");
+            let selected = self
+                .active_profile
+                .clone()
+                .unwrap_or_else(|| "(none)".to_string());
+            egui::ComboBox::from_id_salt("settings_profile")
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(self.active_profile.is_none(), "(none)")
+                        .clicked()
+                    {
+                        activate = Some(None);
+                    }
+                    for profile in self.profiles.clone() {
+                        let is_active =
+                            self.active_profile.as_deref() == Some(profile.name.as_str());
+                        if ui.selectable_label(is_active, &profile.name).clicked() {
+                            activate = Some(Some(profile.name));
+                        }
+                    }
+                });
+        });
+
+        for (idx, profile) in self.profiles.clone().iter().enumerate() {
+            ui.horizontal(|ui| {
+                let mut name = profile.name.clone();
+                if ui
+                    .add(egui::TextEdit::singleline(&mut name).desired_width(140.0))
+                    .changed()
+                {
+                    rename = Some((idx, name));
+                }
+                ui.label(profile.mods_dir.display().to_string());
+                if ui.button("Use").clicked() {
+                    activate = Some(Some(profile.name.clone()));
+                }
+                if ui.button("Update from current folder").clicked() {
+                    update_from_current = Some(idx);
+                }
+                if ui.button("Remove").clicked() {
+                    remove = Some(idx);
+                }
             });
         }
+
+        ui.horizontal(|ui| {
+            ui.label("New profile:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.profile_name_input)
+                    .hint_text("name")
+                    .desired_width(140.0),
+            );
+            if ui.button("Add").clicked() {
+                add_named = true;
+            }
+        });
+
+        ui.horizontal(|ui| {
+            if ui.button("Detect Mods Folders").clicked() {
+                // Pure std::fs at depth <= 2 — no need to defer like `rfd`.
+                self.detected_dirs = crate::discover::discover();
+                if self.detected_dirs.is_empty() {
+                    self.log_messages.push(LogEntry {
+                        message: "No launcher mods folders detected.".into(),
+                    });
+                }
+            }
+        });
+        for (idx, detected) in self.detected_dirs.clone().iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "{} — {} ({} JAR(s))",
+                    detected.launcher.label(),
+                    detected.mods_dir.display(),
+                    detected.jar_count
+                ));
+                if ui.button("Add").clicked() {
+                    add_detected = Some(idx);
+                }
+            });
+        }
+
+        // ── Apply staged actions ─────────────────────────────────────────
+        if let Some((idx, name)) = rename
+            && !name.trim().is_empty()
+            && let Some(profile) = self.profiles.get_mut(idx)
+        {
+            profile.name = name;
+        }
+        if let Some(idx) = update_from_current {
+            let dir = PathBuf::from(&self.mods_dir_input);
+            if let Some(profile) = self.profiles.get_mut(idx) {
+                profile.mods_dir = dir;
+            }
+        }
+        if let Some(idx) = remove {
+            let removed = self.profiles.remove(idx);
+            // Never leave active_profile pointing at a deleted profile.
+            if self.active_profile.as_deref() == Some(removed.name.as_str()) {
+                self.active_profile = None;
+                self.sync_config_to_worker();
+            }
+        }
+        if add_named {
+            let name = self.profile_name_input.clone();
+            let dir = PathBuf::from(&self.mods_dir_input);
+            self.add_profile(&name, dir);
+        }
+        if let Some(idx) = add_detected
+            && let Some(detected) = self.detected_dirs.get(idx).cloned()
+        {
+            let name = self.unique_profile_name(&detected);
+            self.add_profile(&name, detected.mods_dir);
+        }
+        if let Some(target) = activate {
+            self.activate_profile(target);
+        }
+    }
+
+    /// Add a profile (updating it in place when the name already exists) and
+    /// make it active.
+    fn add_profile(&mut self, name: &str, mods_dir: PathBuf) {
+        let name = name.trim();
+        if name.is_empty() {
+            self.log_messages.push(LogEntry {
+                message: "Profile name cannot be empty.".into(),
+            });
+            return;
+        }
+
+        match self.profiles.iter_mut().find(|p| p.name == name) {
+            Some(existing) => existing.mods_dir = mods_dir,
+            None => self.profiles.push(Profile {
+                name: name.to_string(),
+                mods_dir,
+                loader: None,
+                game_version: None,
+            }),
+        }
+        self.profile_name_input.clear();
+        self.activate_profile(Some(name.to_string()));
+    }
+
+    /// Select a profile (or `(none)`), point the mods-directory field at it,
+    /// push the change to the worker, and rescan — the previously listed mods
+    /// belong to the folder being left behind.
+    fn activate_profile(&mut self, name: Option<String>) {
+        self.active_profile = name;
+
+        let dir = self
+            .active_profile
+            .as_ref()
+            .and_then(|name| self.profiles.iter().find(|p| &p.name == name))
+            .map(|p| p.mods_dir.clone());
+
+        let Some(dir) = dir else {
+            // "(none)" only clears the selection: the typed-in folder stands.
+            self.sync_config_to_worker();
+            return;
+        };
+
+        // Must go through `mods_dir_input`: `sync_config_to_worker` overwrites
+        // `cfg.mods_dir` from it every frame, so writing the shared config
+        // directly would be clobbered.
+        self.mods_dir_input = dir.display().to_string();
+        self.sync_config_to_worker();
+
+        self.identified_mods.clear();
+        self.unknown_count = 0;
+        self.total_jars = 0;
+        self.dep_graph = None;
+        self.worker.send_command(GuiCommand::ScanMods(dir));
+    }
+
+    /// A non-clashing profile name for a detected folder, e.g. `prism-spark`.
+    fn unique_profile_name(&self, detected: &DiscoveredModsDir) -> String {
+        let base = match instance_label(&detected.mods_dir) {
+            Some(instance) => format!("{}-{}", detected.launcher.slug(), slugify(&instance)),
+            None => detected.launcher.slug().to_string(),
+        };
+
+        if self.profile_name_is_free(&base) {
+            return base;
+        }
+        (2..)
+            .map(|n| format!("{}-{}", base, n))
+            .find(|candidate| self.profile_name_is_free(candidate))
+            .unwrap_or(base)
+    }
+
+    fn profile_name_is_free(&self, name: &str) -> bool {
+        !self.profiles.iter().any(|p| p.name == name)
     }
 
     fn render_rollback_tab(&mut self, ui: &mut egui::Ui) {
@@ -1510,70 +1769,113 @@ impl AnvilApp {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        cfg.profiles = self.profiles.clone();
+        cfg.active_profile = self.active_profile.clone();
     }
 
-    fn save_settings(&self) {
-        use crate::paths;
-        use crate::types::Config;
+    /// Persist the Settings tab into `config.toml`.
+    ///
+    /// Read-modify-write: the file is the only store, so building a fresh
+    /// `Config` here would silently delete every key the Settings tab does not
+    /// own (`verbose`, `quiet`, `dry_run`) on every save.
+    fn save_settings(&self) -> crate::error::Result<()> {
+        // Same file the app was resolved from, rather than re-deriving it.
+        let config_path = self
+            .config
+            .lock()
+            .map(|cfg| cfg.config_path.clone())
+            .unwrap_or_else(|_| crate::paths::config_dir().join("config.toml"));
+        let existing = crate::config::load(&config_path)?;
 
-        let config_path = paths::config_dir().join("config.toml");
-        let cfg = Config {
-            mods_dir: Some(PathBuf::from(&self.mods_dir_input)),
-            backup: Some(self.settings_backup),
-            loader: if self.settings_loader.is_empty() {
+        let form = SettingsForm {
+            // While a profile is active the profile owns the folder; writing it
+            // into the global key would freeze that path into the file.
+            mods_dir: if self.active_profile.is_some() {
                 None
             } else {
-                Some(self.settings_loader.clone())
+                Some(PathBuf::from(&self.mods_dir_input))
             },
-            game_version: if self.settings_game_version.is_empty() {
-                None
-            } else {
-                Some(self.settings_game_version.clone())
-            },
-            include: if self.settings_include.trim().is_empty() {
-                None
-            } else {
-                Some(
-                    self.settings_include
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .collect(),
-                )
-            },
-            exclude: if self.settings_exclude.trim().is_empty() {
-                None
-            } else {
-                Some(
-                    self.settings_exclude
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .collect(),
-                )
-            },
+            backup: self.settings_backup,
+            loader: (!self.settings_loader.is_empty()).then(|| self.settings_loader.clone()),
+            game_version: (!self.settings_game_version.is_empty())
+                .then(|| self.settings_game_version.clone()),
+            include: split_patterns(&self.settings_include),
+            exclude: split_patterns(&self.settings_exclude),
             max_updates: self.settings_max_updates.parse::<usize>().ok(),
-            verbose: None,
-            quiet: None,
-            dry_run: None,
-            confirm: Some(self.settings_confirm),
-            changelog: Some(self.settings_changelog),
-            dark_mode: Some(self.settings_dark_mode),
+            confirm: self.settings_confirm,
+            changelog: self.settings_changelog,
+            dark_mode: self.settings_dark_mode,
+            profiles: self.profiles.clone(),
+            active_profile: self.active_profile.clone(),
         };
 
+        let merged = crate::config::merge_settings(existing, &form);
+
         if let Some(parent) = config_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
-        match toml::to_string_pretty(&cfg) {
-            Ok(content) => {
-                let _ = std::fs::write(&config_path, content);
-            }
-            Err(e) => {
-                tracing::error!("failed to serialize config: {}", e);
-            }
-        }
+        let content = toml::to_string_pretty(&merged).map_err(|e| {
+            crate::error::Error::Config(format!("failed to serialize config: {}", e))
+        })?;
+        std::fs::write(&config_path, content)?;
+        Ok(())
     }
 }
 
 // ── Outcome display helpers ────────────────────────────────────────────────
+
+/// The instance/profile folder that owns a mods dir, if it is informative.
+///
+/// `…/instances/spark/minecraft/mods` → `spark`; `~/.minecraft/mods` → `None`
+/// (the official launcher has no instance folder there).
+fn instance_label(mods_dir: &std::path::Path) -> Option<String> {
+    let parent = mods_dir.parent()?;
+    let parent_name = parent.file_name()?.to_string_lossy().to_lowercase();
+
+    let candidate = match parent_name.as_str() {
+        "minecraft" | ".minecraft" => parent
+            .parent()?
+            .file_name()?
+            .to_string_lossy()
+            .to_lowercase(),
+        _ => parent_name,
+    };
+
+    // `~/.minecraft/mods` would otherwise be named after the user's home dir.
+    let is_home_dir = dirs::home_dir()
+        .and_then(|home| home.file_name().map(|n| n.to_string_lossy().to_lowercase()))
+        .is_some_and(|home| home == candidate);
+
+    if candidate == "mods" || candidate.starts_with('.') || is_home_dir {
+        None
+    } else {
+        Some(candidate)
+    }
+}
+
+/// Lower-case, TOML-friendly form of a folder name.
+fn slugify(text: &str) -> String {
+    let slug: String = text
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    slug.trim_matches('-').to_string()
+}
+
+/// Comma-separated patterns → `Some(list)`, or `None` when the field is blank
+/// (so clearing the field removes the key instead of writing an empty list).
+fn split_patterns(text: &str) -> Option<Vec<String>> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(
+        text.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    )
+}
 
 fn render_outcome_label(ui: &mut egui::Ui, outcome: &ModOutcome) {
     match outcome {

@@ -81,6 +81,9 @@ async fn prompt_if_needed_noop_when_not_tty() {
         confirm: false,
         changelog: false,
         dark_mode: false,
+        profiles: vec![],
+        active_profile: None,
+        config_path: PathBuf::from("config.toml"),
     };
 
     // When both loader and game_version are Some, prompt_if_needed skips

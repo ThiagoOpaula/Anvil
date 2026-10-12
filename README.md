@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/release-v0.5.0-blue?style=flat-square" alt="Latest Release">
+  <img src="https://img.shields.io/badge/release-v0.6.0-blue?style=flat-square" alt="Latest Release">
   <img src="https://img.shields.io/badge/Rust-%23000000?style=flat-square&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue?style=flat-square" alt="License">
@@ -77,7 +77,7 @@ For users who prefer a graphical interface, Anvil ships a desktop app for Window
 - **Scan & Identify** — browse your mods folder, see every mod's loader and game version, click mod names to open their Modrinth page. Export results as CSV, Markdown, or JSON
 - **Import Mod List** — load an exported mod list and download all mods with one click
 - **Updates** — pick a target Minecraft version and loader, check for updates, download with one click
-- **Settings** — configure backup, changelog, dark mode, include/exclude filters, and save to `config.toml`
+- **Settings** — configure backup, changelog, dark mode, include/exclude filters, manage profiles, and save to `config.toml`
 - **Rollback** — restore mods from the last backup
 - **Keyboard shortcuts** — `Ctrl+R` to scan, `Ctrl+U` to check updates
 
@@ -178,6 +178,12 @@ anvil --include "S*" --exclude "*-dev"  # Combine patterns
 # ── Rollback ─────────────────────────────────
 anvil rollback                      # Restore from last backup
 
+# ── Profiles ─────────────────────────────────
+anvil profiles                      # List configured mods folders
+anvil profiles --detect             # Also probe installed launchers
+anvil --profile prism               # Use a named profile
+anvil --profile prism --dry-run     # …for one run, without changing config
+
 # ── Custom mods folder ───────────────────────
 anvil --mods-dir "D:\modpack\mods" --dry-run
 ```
@@ -209,10 +215,13 @@ Anvil is designed with safety as a core principle:
 | 🎯 **Smart filters** | Include/exclude by slug, wildcard, or regex |
 | 🔐 **SHA1 verification** | Every download hash-checked — no corruption |
 | ⚠️ **Conflict detection** | Warns about incompatible dependency combos |
-| 🌳 **Dependency tree** | `list --deps` and the GUI show what depends on what, and flag missing required deps |
+| 🌳 **Dependency tree** | `list --deps` and the GUI show what depends on what, resolve missing-dep titles from Modrinth, and flag missing required deps |
+| 📥 **Install missing deps** | `list --deps --install-deps` (or the GUI button) downloads missing required dependencies and their transitive required deps |
 | 🛡️ **Deprecation warnings** | Alerts on archived/withdrawn Modrinth projects |
 | 📤 **Export mod list** | Save scan results as CSV, Markdown, or JSON |
 | 📥 **Import mod list** | Load an exported list and download all mods at once |
+| 👥 **Profiles** | Named mods folders — `--profile NAME`, `anvil profiles`, managed in the GUI |
+| 🐧 **Launcher discovery** | Finds mods folders from Prism, MultiMC, Modrinth App, ATLauncher, GDLauncher and Flatpak installs |
 
 ### Power User Features
 
@@ -279,14 +288,33 @@ Place `config.toml` at:
 | macOS | `~/Library/Application Support/anvil/config.toml` |
 
 ```toml
+mods_dir = "/home/you/.minecraft/mods"   # used when no profile is active
 game_version = "1.21.4"
 loader = "fabric"
 include = ["sodium*", "lithium*"]
 exclude = ["*-dev"]
 changelog = true
+
+# Named mods folders. `active_profile` picks one by default —
+# while it is set, the global `mods_dir` above is ignored.
+active_profile = "prism"
+
+[[profiles]]
+name = "prism"
+mods_dir = "/home/you/.local/share/PrismLauncher/instances/spark/minecraft/mods"
+game_version = "1.21.1"
+
+[[profiles]]
+name = "vanilla"
+mods_dir = "/home/you/.minecraft/mods"
 ```
 
-CLI flags always win over config values. The GUI Settings tab writes this file automatically.
+Paths are used verbatim — `~` is not expanded, so write them out in full
+(`anvil profiles --detect` prints ready-to-paste paths).
+CLI flags always win over config values — `--mods-dir` beats `--profile`, which beats
+`active_profile`. `anvil profiles --detect` finds mods folders across the launchers you
+actually have (Prism, MultiMC, Modrinth App, ATLauncher, GDLauncher, Flatpak installs).
+The GUI Settings tab writes this file automatically.
 
 <br>
 

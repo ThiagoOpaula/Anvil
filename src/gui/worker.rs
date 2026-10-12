@@ -47,6 +47,9 @@ pub enum GuiCommand {
     CheckAppUpdate,
     /// Download all mods from an imported mod list.
     DownloadImportedMods(Vec<crate::types::ImportedMod>),
+    /// Download the given missing dependency project ids into the mods folder,
+    /// then re-scan so the dependency tree refreshes.
+    InstallMissingDeps(Vec<String>),
 }
 
 /// Events the worker sends back to the GUI.
@@ -79,11 +82,12 @@ pub enum WorkerEvent {
     ConfirmRequest { question: String },
     /// A log message from the pipeline.
     Log { message: String },
-    /// Scan complete with identified mods.
+    /// Scan complete with identified mods and a name-resolved dependency graph.
     ScanComplete {
         identified: Vec<IdentifiedMod>,
         unknown_count: usize,
         total_jars: usize,
+        dep_graph: crate::deps::DepGraph,
     },
     /// Update check complete with per-mod outcomes.
     UpdatesChecked {
@@ -480,6 +484,48 @@ pub fn spawn_worker(shared_config: Arc<Mutex<ResolvedConfig>>) -> WorkerHandle {
                         }
                         let _ = event_tx.send(WorkerEvent::Done);
                     }
+                    GuiCommand::InstallMissingDeps(project_ids) => {
+                        match crate::deps::install_projects(
+                            &config.mods_dir,
+                            project_ids,
+                            crate::deps::InstallOptions {
+                                loader: config.loader.as_deref(),
+                                game_version: config.game_version.as_deref(),
+                                already_installed: Default::default(),
+                            },
+                            &api,
+                            &cache,
+                            &progress,
+                        )
+                        .await
+                        {
+                            Ok(outcome) => {
+                                for dep in &outcome.installed {
+                                    let _ = event_tx.send(WorkerEvent::Log {
+                                        message: format!(
+                                            "Installed {} {} as {}",
+                                            dep.name, dep.version, dep.filename
+                                        ),
+                                    });
+                                }
+                                for (id, reason) in &outcome.failed {
+                                    let _ = event_tx.send(WorkerEvent::Log {
+                                        message: format!(
+                                            "Failed to install {}: {}",
+                                            id, reason
+                                        ),
+                                    });
+                                }
+                                // Re-scan so the tree reflects the new files.
+                                run_scan(&config, &api, &cache, &progress, &event_tx).await;
+                            }
+                            Err(e) => {
+                                let _ = event_tx
+                                    .send(WorkerEvent::Error(format!("install deps: {}", e)));
+                                let _ = event_tx.send(WorkerEvent::Done);
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -518,6 +564,7 @@ async fn run_scan(
             identified: vec![],
             unknown_count: 0,
             total_jars: 0,
+            dep_graph: crate::deps::DepGraph::default(),
         });
         return;
     }
@@ -598,10 +645,16 @@ async fn run_scan(
         }
     }
 
+    // Build the dependency graph and resolve missing-project display names
+    // so the GUI can show titles instead of raw Modrinth ids.
+    let mut dep_graph = crate::deps::build(&identified);
+    crate::deps::resolve_display_names(&mut dep_graph, api, cache).await;
+
     let _ = event_tx.send(WorkerEvent::ScanComplete {
         identified,
         unknown_count,
         total_jars,
+        dep_graph,
     });
 }
 

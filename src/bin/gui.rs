@@ -11,7 +11,7 @@
 //! The CLI (`src/main.rs`) is unaffected and continues to work without the
 //! `gui` feature.
 
-use anvil::config::{self, ResolvedConfig};
+use anvil::config;
 use anvil::paths;
 
 fn main() -> eframe::Result<()> {
@@ -50,45 +50,20 @@ fn main() -> eframe::Result<()> {
         .and_then(|s| serde_json::from_str(&s).ok());
 
     // ── Load config ──────────────────────────────────────────────────────
+    // Same resolution path as the CLI, so `active_profile` is honoured here
+    // without duplicating the precedence rules.
     let config_path = paths::config_dir().join("config.toml");
-    let resolved = match config::load(&config_path) {
-        Ok(file_cfg) => {
-            // Build ResolvedConfig from file + defaults.
-            ResolvedConfig {
-                mods_dir: file_cfg
-                    .mods_dir
-                    .unwrap_or_else(paths::default_mods_dir),
-                backup: file_cfg.backup.unwrap_or(true),
-                loader: file_cfg.loader,
-                game_version: file_cfg.game_version,
-                include: file_cfg.include.unwrap_or_default(),
-                exclude: file_cfg.exclude.unwrap_or_default(),
-                max_updates: file_cfg.max_updates,
-                log_level: anvil::config::LogLevel::Info,
-                dry_run: file_cfg.dry_run.unwrap_or(false),
-                confirm: file_cfg.confirm.unwrap_or(true),
-                changelog: file_cfg.changelog.unwrap_or(false),
-                dark_mode: file_cfg.dark_mode.unwrap_or(false),
-            }
-        }
-        Err(e) => {
+    let resolved = config::resolve_from_file(
+        config::load(&config_path).unwrap_or_else(|e| {
             tracing::warn!("config load failed: {} — using defaults", e);
-            ResolvedConfig {
-                mods_dir: paths::default_mods_dir(),
-                backup: true,
-                loader: None,
-                game_version: None,
-                include: vec![],
-                exclude: vec![],
-                max_updates: None,
-                log_level: anvil::config::LogLevel::Info,
-                dry_run: false,
-                confirm: true,
-                changelog: false,
-                dark_mode: false,
-            }
-        }
-    };
+            Default::default()
+        }),
+        None,
+        None,
+        None,
+        &config_path,
+    )
+    .expect("GUI passes no --profile flag, so resolution cannot fail");
 
     // ── Launch GUI ──────────────────────────────────────────────────────
     let mut viewport = egui::ViewportBuilder::default()
