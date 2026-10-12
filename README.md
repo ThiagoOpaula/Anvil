@@ -209,6 +209,7 @@ Anvil is designed with safety as a core principle:
 | 🎯 **Smart filters** | Include/exclude by slug, wildcard, or regex |
 | 🔐 **SHA1 verification** | Every download hash-checked — no corruption |
 | ⚠️ **Conflict detection** | Warns about incompatible dependency combos |
+| 🌳 **Dependency tree** | `list --deps` and the GUI show what depends on what, and flag missing required deps |
 | 🛡️ **Deprecation warnings** | Alerts on archived/withdrawn Modrinth projects |
 | 📤 **Export mod list** | Save scan results as CSV, Markdown, or JSON |
 | 📥 **Import mod list** | Load an exported list and download all mods at once |
@@ -297,7 +298,6 @@ CLI flags always win over config values. The GUI Settings tab writes this file a
 
 | Priority | Feature |
 |----------|---------|
-| 🌳 | Dependency tree — visualize which mods depend on which |
 | 📦 | Modpack support — import and update `.mrpack` files |
 | 🔄 | Self-updater — Anvil updates itself |
 | 🔎 | Mod discovery — browse Modrinth from inside the app |

@@ -12,7 +12,7 @@
 
 ## Medium
 
-- [ ] 🌳 **Dependency tree** — visualize which mods depend on which
+- [x] 🌳 **Dependency tree** — visualize which mods depend on which, flag missing/incompatible dependencies, and warn when an update would introduce a conflict
 - [ ] 📦 **Modpack support** — import and update `.mrpack` files
 - [ ] 👥 **Profile system** — switch between multiple mods folders
 - [ ] ⏰ **Scheduled checks** — opt-in daily update notifications
