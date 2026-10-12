@@ -77,6 +77,12 @@ pub struct AnvilApp {
     unknown_count: usize,
     total_jars: usize,
 
+    /// Dependency graph over the full scan result (ignores Scan-tab filters).
+    dep_graph: Option<crate::deps::DepGraph>,
+
+    // Warnings from the last update run (warn-only, nothing was blocked)
+    update_warnings: Vec<String>,
+
     // Filter state (for scan tab)
     filter_loader: String,
     filter_game_version: String,
@@ -172,6 +178,8 @@ impl AnvilApp {
             identified_mods: vec![],
             unknown_count: 0,
             total_jars: 0,
+            dep_graph: None,
+            update_warnings: vec![],
             filter_loader: String::new(),
             filter_game_version: String::new(),
             filter_include: String::new(),
@@ -234,6 +242,9 @@ impl AnvilApp {
                     self.update_outcomes = outcomes;
                 }
                 WorkerEvent::ChangelogReady { .. } => {}
+                WorkerEvent::Warnings(warnings) => {
+                    self.update_warnings = warnings;
+                }
                 WorkerEvent::SummaryReady(summary) => {
                     self.summary = Some(summary);
                 }
@@ -265,6 +276,7 @@ impl AnvilApp {
                     self.identified_mods = identified;
                     self.unknown_count = unknown_count;
                     self.total_jars = total_jars;
+                    self.dep_graph = Some(crate::deps::build(&self.identified_mods));
                     self.worker_busy = false;
                 }
                 WorkerEvent::UpdatesChecked {
@@ -324,6 +336,7 @@ impl AnvilApp {
                     self.identified_mods.clear();
                     self.unknown_count = 0;
                     self.total_jars = 0;
+                    self.dep_graph = None;
                     self.imported_mods.clear();
                     self.worker.send_command(GuiCommand::ScanMods(dir));
                 }
@@ -616,6 +629,8 @@ impl eframe::App for AnvilApp {
                     self.identified_mods.clear();
                     self.unknown_count = 0;
                     self.total_jars = 0;
+                    self.dep_graph = None;
+                    self.update_warnings.clear();
                     self.log_messages.clear();
                     self.worker.send_command(GuiCommand::ScanMods(dir));
                 }
@@ -624,6 +639,7 @@ impl eframe::App for AnvilApp {
                     self.update_outcomes.clear();
                     self.candidates_count = 0;
                     self.summary = None;
+                    self.update_warnings.clear();
                     self.log_messages.clear();
                     self.sync_config_to_worker();
                     self.worker.send_command(GuiCommand::CheckUpdates);
@@ -790,6 +806,8 @@ impl AnvilApp {
                 self.identified_mods.clear();
                 self.unknown_count = 0;
                 self.total_jars = 0;
+                self.dep_graph = None;
+                self.update_warnings.clear();
                 self.log_messages.clear();
                 self.worker.send_command(GuiCommand::ScanMods(dir));
             }
@@ -868,6 +886,61 @@ impl AnvilApp {
         });
 
         ui.separator();
+
+        // Dependencies — built over the full identified set (the filters above
+        // do not affect it, same as `anvil list --deps`). Placed above the
+        // results table because the table consumes the remaining height.
+        if let Some(graph) = &self.dep_graph {
+            let missing = &graph.missing;
+            let incompat = &graph.incompat;
+            let tree = crate::deps::format_tree(&self.identified_mods, graph);
+            let issue_count = missing.len() + incompat.len();
+
+            let header = if issue_count > 0 {
+                format!("Dependencies \u{2014} {} issue(s)", issue_count)
+            } else {
+                String::from("Dependencies")
+            };
+
+            egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                ui.make_persistent_id("scan_deps_section"),
+                issue_count > 0,
+            )
+            .show_header(ui, |ui| {
+                ui.strong(header);
+            })
+            .body(|ui| {
+                for miss in missing {
+                    ui.colored_label(
+                        egui::Color32::RED,
+                        format!("! {} requires {}", miss.dependent_name, miss.to_project_id),
+                    );
+                }
+                for pair in incompat {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!(
+                            "! {} conflicts with {}",
+                            pair.project_name, pair.conflicts_with_name
+                        ),
+                    );
+                }
+                if issue_count > 0 {
+                    ui.separator();
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .id_salt("scan_deps_tree")
+                    .show(ui, |ui| {
+                        for line in &tree {
+                            ui.monospace(line);
+                        }
+                    });
+            });
+
+            ui.separator();
+        }
 
         // Results table
         let filtered = self.filtered_mods();
@@ -1019,6 +1092,11 @@ impl AnvilApp {
     fn render_updates_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Updates");
 
+        // Warnings from the last run — informational only; nothing was blocked.
+        for warning in &self.update_warnings {
+            ui.colored_label(egui::Color32::YELLOW, format!("\u{26a0} {}", warning));
+        }
+
         // Target game version & loader — live here so users see what
         // they're updating to without switching to the Settings tab.
         ui.horizontal(|ui| {
@@ -1084,6 +1162,7 @@ impl AnvilApp {
                 self.update_outcomes.clear();
                 self.candidates_count = 0;
                 self.summary = None;
+                self.update_warnings.clear();
                 self.log_messages.clear();
                 self.worker.send_command(GuiCommand::CheckUpdates);
             }

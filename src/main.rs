@@ -76,8 +76,8 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        Some(Command::List(_)) => {
-            anvil::run_list(&resolved, &api, &cache, &progress).await?;
+        Some(Command::List(args)) => {
+            anvil::run_list(&resolved, &api, &cache, &progress, args.deps).await?;
         }
 
         Some(Command::Update(_)) | None => {

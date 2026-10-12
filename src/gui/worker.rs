@@ -73,6 +73,8 @@ pub enum WorkerEvent {
     SummaryReady(RunSummary),
     /// Structured per-mod outcomes from the pipeline.
     OutcomesReady(Vec<ModOutcome>),
+    /// Non-fatal warnings from the pipeline (e.g. update-introduced conflicts).
+    Warnings(Vec<String>),
     /// The worker needs user confirmation (yes/no).
     ConfirmRequest { question: String },
     /// A log message from the pipeline.

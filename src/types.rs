@@ -408,6 +408,10 @@ pub trait ProgressRenderer: Send + Sync {
     /// The default is a no-op — the CLI renders via `print_table` instead.
     fn report_outcomes(&self, _outcomes: &[ModOutcome]) {}
 
+    /// Non-fatal run warnings (e.g. update-introduced incompatibilities).
+    /// Default no-op — existing implementors stay source-compatible.
+    fn report_warnings(&self, _warnings: &[String]) {}
+
     /// Display a changelog block for a mod.
     fn print_changelog(&self, slug: &str, version: &str, changelog: &str);
 

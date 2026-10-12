@@ -8,9 +8,12 @@ use common::helpers::*;
 use common::mocks::*;
 
 use std::fs;
+use std::path::PathBuf;
 
 use anvil::cache::ApiCache;
+use anvil::config::ResolvedConfig;
 use anvil::error::Error;
+use anvil::types::{Dependency, DependencyType};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ── 1. Empty mods directory → RunSummary::default() ───────────────────────
@@ -829,4 +832,197 @@ async fn non_jar_files_are_ignored() {
     assert_eq!(summary.identified, 1);
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── 19-22. Update-introduced incompatibilities → warnings ─────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Build an `Incompatible` dependency on `project_id`.
+fn incompat_dep(project_id: &str) -> Dependency {
+    Dependency {
+        version_id: None,
+        project_id: Some(project_id.to_string()),
+        dependency_type: DependencyType::Incompatible,
+    }
+}
+
+/// Two-JAR fixture: Mod A has an update, Mod B is installed and up to date.
+/// `current_a_deps` are declared by A's installed version, `latest_a_deps` by
+/// A's new version. `label` must be unique per test — the on-disk API cache is
+/// keyed by SHA1, so identical jar bytes would let tests read each other's
+/// cached versions.
+struct IncompatFixture {
+    dir: PathBuf,
+    config: ResolvedConfig,
+    api: MockApi,
+    cache: ApiCache,
+    progress: MockProgress,
+}
+
+fn incompat_fixture(
+    label: &str,
+    current_a_deps: Vec<Dependency>,
+    latest_a_deps: Vec<Dependency>,
+    dry_run: bool,
+) -> IncompatFixture {
+    let content_a = format!("update-incompat-{}-mod-a-v1", label).into_bytes();
+    let content_b = format!("update-incompat-{}-mod-b-v1", label).into_bytes();
+    let dl_a = format!("update-incompat-{}-mod-a-v2", label).into_bytes();
+    let sha1_a = sha1_hex(&content_a);
+    let sha1_b = sha1_hex(&content_b);
+    let dl_sha1_a = sha1_hex(&dl_a);
+
+    let dir = setup_temp_mods_dir(&[
+        ("mod-a-1.0.jar", content_a.as_slice()),
+        ("mod-b-1.0.jar", content_b.as_slice()),
+    ]);
+
+    let api = MockApi::new();
+    let cache = ApiCache::new();
+    let progress = MockProgress::new();
+
+    // Mod B: installed, up to date.
+    let current_b = make_version("vb1", "proj-b", "Mod B", "1.0.0", vec![]);
+    api.set_version(&sha1_b, Some(current_b.clone()));
+    api.set_latest(&sha1_b, Some(current_b));
+
+    // Mod A: installed, update available.
+    let mut current_a = make_version("va1", "proj-a", "Mod A", "1.0.0", vec![]);
+    current_a.dependencies = current_a_deps;
+    api.set_version(&sha1_a, Some(current_a));
+
+    let new_file = make_file(
+        "https://example.com/mod-a-2.0.jar",
+        "mod-a-2.0.jar",
+        &dl_sha1_a,
+    );
+    let mut latest_a = make_version("va2", "proj-a", "Mod A", "2.0.0", vec![new_file]);
+    latest_a.dependencies = latest_a_deps;
+    api.set_latest(&sha1_a, Some(latest_a));
+    api.set_project("proj-a", make_project("proj-a", "mod-a", "Mod A"));
+    api.set_download_content(dl_a.clone(), None);
+
+    let mut config = make_config(&dir);
+    config.dry_run = dry_run;
+
+    IncompatFixture {
+        dir,
+        config,
+        api,
+        cache,
+        progress,
+    }
+}
+
+#[tokio::test]
+async fn update_introducing_incompatibility_reports_warning() {
+    let fx = incompat_fixture("introduced", vec![], vec![incompat_dep("proj-b")], false);
+
+    let summary = anvil::updater::run(&fx.config, &fx.api, &fx.cache, &fx.progress)
+        .await
+        .unwrap();
+
+    assert_eq!(summary.updates_applied, 1);
+
+    let warnings = fx.progress.warnings.lock().unwrap();
+    assert_eq!(warnings.len(), 1, "warnings: {:?}", warnings);
+    assert_eq!(
+        warnings[0],
+        "Update introduces incompatibility: Mod A conflicts with Mod B"
+    );
+
+    let _ = fs::remove_dir_all(&fx.dir);
+}
+
+#[tokio::test]
+async fn update_without_new_incompatibility_reports_no_warnings() {
+    let fx = incompat_fixture("clean", vec![], vec![], false);
+
+    let summary = anvil::updater::run(&fx.config, &fx.api, &fx.cache, &fx.progress)
+        .await
+        .unwrap();
+
+    assert_eq!(summary.updates_applied, 1);
+    assert!(fx.progress.warnings.lock().unwrap().is_empty());
+
+    let _ = fs::remove_dir_all(&fx.dir);
+}
+
+#[tokio::test]
+async fn preexisting_incompatibility_is_not_an_update_warning() {
+    // Both installed mods already conflict, and the update keeps declaring it.
+    let mut a_old = make_identified_mod("mod-a-1.0.jar", "proj-a", "Mod A", "1.0.0");
+    a_old.current_version.dependencies = vec![incompat_dep("proj-b")];
+    let b_old = make_identified_mod("mod-b-1.0.jar", "proj-b", "Mod B", "1.0.0");
+    let before = anvil::deps::build(&[a_old, b_old]);
+    assert_eq!(before.incompat.len(), 1);
+
+    let fx = incompat_fixture(
+        "preexisting",
+        vec![incompat_dep("proj-b")],
+        vec![incompat_dep("proj-b")],
+        false,
+    );
+
+    let summary = anvil::updater::run(&fx.config, &fx.api, &fx.cache, &fx.progress)
+        .await
+        .unwrap();
+
+    assert_eq!(summary.updates_applied, 1);
+    assert!(
+        fx.progress.warnings.lock().unwrap().is_empty(),
+        "a pre-existing conflict must not be reported as update-introduced"
+    );
+
+    let _ = fs::remove_dir_all(&fx.dir);
+}
+
+#[tokio::test]
+async fn dry_run_still_reports_update_incompatibility() {
+    let fx = incompat_fixture("dry-run", vec![], vec![incompat_dep("proj-b")], true);
+
+    let summary = anvil::updater::run(&fx.config, &fx.api, &fx.cache, &fx.progress)
+        .await
+        .unwrap();
+
+    assert_eq!(summary.updates_applied, 0);
+
+    let warnings = fx.progress.warnings.lock().unwrap();
+    assert_eq!(warnings.len(), 1, "warnings: {:?}", warnings);
+    assert_eq!(
+        warnings[0],
+        "Update introduces incompatibility: Mod A conflicts with Mod B"
+    );
+
+    let _ = fs::remove_dir_all(&fx.dir);
+}
+
+#[tokio::test]
+async fn conflict_with_filter_excluded_installed_mod_is_still_reported() {
+    // Mod B is excluded by the Scan filters, so it never reaches the filtered
+    // update set — but it is still installed, and the dependency graph is built
+    // over `identified`. A conflict with it must therefore still be reported.
+    let mut fx = incompat_fixture(
+        "excluded-target",
+        vec![],
+        vec![incompat_dep("proj-b")],
+        false,
+    );
+    fx.config.exclude = vec!["Mod B".into()];
+
+    let summary = anvil::updater::run(&fx.config, &fx.api, &fx.cache, &fx.progress)
+        .await
+        .unwrap();
+
+    assert_eq!(summary.skipped, 1, "Mod B must be excluded from the run");
+
+    let warnings = fx.progress.warnings.lock().unwrap();
+    assert_eq!(warnings.len(), 1, "warnings: {:?}", warnings);
+    assert_eq!(
+        warnings[0],
+        "Update introduces incompatibility: Mod A conflicts with Mod B"
+    );
+
+    let _ = fs::remove_dir_all(&fx.dir);
 }

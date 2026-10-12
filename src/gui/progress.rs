@@ -79,6 +79,10 @@ impl ProgressRenderer for GuiProgress {
             .send(WorkerEvent::OutcomesReady(outcomes.to_vec()));
     }
 
+    fn report_warnings(&self, warnings: &[String]) {
+        let _ = self.event_tx.send(WorkerEvent::Warnings(warnings.to_vec()));
+    }
+
     fn confirm(&self, question: &str) -> bool {
         let (tx, rx) = tokio::sync::oneshot::channel();
 

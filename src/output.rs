@@ -149,6 +149,12 @@ impl ProgressRenderer for ConsoleProgress {
         }
     }
 
+    fn report_warnings(&self, warnings: &[String]) {
+        for msg in warnings {
+            println!("\u{26a0} {}", msg);
+        }
+    }
+
     fn confirm(&self, question: &str) -> bool {
         print!("{} [y/N]: ", question);
         let _ = io::stdout().flush();

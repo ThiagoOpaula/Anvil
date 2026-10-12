@@ -108,5 +108,9 @@ pub struct UpdateArgs {
 pub struct ListArgs {
     #[command(flatten)]
     pub common: CommonArgs,
+
+    /// Show a dependency tree plus missing/incompatible dependency issues.
+    #[arg(long)]
+    pub deps: bool,
 }
 

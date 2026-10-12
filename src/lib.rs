@@ -11,6 +11,7 @@ pub mod backup;
 pub mod cache;
 pub mod cli;
 pub mod config;
+pub mod deps;
 pub mod error;
 pub mod filters;
 pub mod interactive;
@@ -37,11 +38,15 @@ use crate::types::{ApiClient, FilterOpts, IdentifiedMod, ProgressRenderer};
 
 /// Run the scanner pipeline but stop after identification — print a table
 /// of identified mods and exit.  Used by the `list` subcommand.
+///
+/// When `show_deps` is true, also prints a dependency tree and any
+/// missing-required / incompatibility issues.
 pub async fn run_list(
     config: &ResolvedConfig,
     api: &dyn ApiClient,
     cache: &ApiCache,
     progress: &dyn ProgressRenderer,
+    show_deps: bool,
 ) -> Result<()> {
     // 1. Find JARs
     let jars = scanner::find_jars(&config.mods_dir)?;
@@ -188,6 +193,30 @@ pub async fn run_list(
         filtered_out,
         filtered.len(),
     );
+
+    // 7. Optional dependency tree over the full identified set (so
+    //    missing-required checks see every installed mod, not just the
+    //    filter-surviving rows).
+    if show_deps {
+        let graph = deps::build(&identified);
+
+        println!();
+        println!("Dependency tree");
+        println!();
+        for line in deps::format_tree(&identified, &graph) {
+            println!("{}", line);
+        }
+
+        println!();
+        match deps::format_issues(&graph) {
+            Some(issues) => {
+                for line in issues {
+                    println!("{}", line);
+                }
+            }
+            None => println!("No dependency issues found."),
+        }
+    }
 
     Ok(())
 }

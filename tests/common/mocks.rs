@@ -268,6 +268,8 @@ pub struct MockProgress {
     pub confirm_answers: Mutex<VecDeque<bool>>,
     /// Every question that was passed to `confirm`.
     pub confirm_questions: Mutex<Vec<String>>,
+    /// The last warning batch passed to `report_warnings`.
+    pub warnings: Mutex<Vec<String>>,
 }
 
 impl MockProgress {
@@ -281,6 +283,7 @@ impl MockProgress {
             changelogs: Mutex::new(Vec::new()),
             confirm_answers: Mutex::new(VecDeque::new()),
             confirm_questions: Mutex::new(Vec::new()),
+            warnings: Mutex::new(Vec::new()),
         }
     }
 
@@ -322,6 +325,10 @@ impl ProgressRenderer for MockProgress {
             version.to_string(),
             changelog.to_string(),
         ));
+    }
+
+    fn report_warnings(&self, warnings: &[String]) {
+        *self.warnings.lock().unwrap() = warnings.to_vec();
     }
 
     fn confirm(&self, question: &str) -> bool {

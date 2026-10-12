@@ -99,6 +99,25 @@ fn cli_list_with_filters() {
 }
 
 #[test]
+fn cli_list_deps_flag() {
+    let cli = Cli::parse_from(["anvil", "list", "--deps"]);
+    match cli.command {
+        Some(Command::List(args)) => {
+            assert!(args.deps);
+        }
+        _ => panic!("expected List variant"),
+    }
+
+    let cli = Cli::parse_from(["anvil", "list"]);
+    match cli.command {
+        Some(Command::List(args)) => {
+            assert!(!args.deps);
+        }
+        _ => panic!("expected List variant"),
+    }
+}
+
+#[test]
 fn cli_rollback_subcommand() {
     let cli = Cli::parse_from(["anvil", "rollback"]);
     assert!(matches!(cli.command, Some(Command::Rollback)));

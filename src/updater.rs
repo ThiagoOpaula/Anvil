@@ -23,13 +23,14 @@ use futures::stream::{self, StreamExt};
 use crate::backup;
 use crate::cache::ApiCache;
 use crate::config::ResolvedConfig;
+use crate::deps;
 use crate::error::{Error, Result};
 use crate::filters;
 use crate::locking;
 use crate::output;
 use crate::scanner;
 use crate::types::{
-    ApiClient, DependencyType, FilterOpts, IdentifiedMod, ModOutcome, ProgressRenderer, RunSummary,
+    ApiClient, FilterOpts, IdentifiedMod, ModOutcome, ModVersion, ProgressRenderer, RunSummary,
     UpdateCandidate,
 };
 
@@ -364,23 +365,6 @@ pub async fn run(
                         );
                     }
 
-                // Check dependencies for incompatibilities with installed mods.
-                for dep in &candidate.latest_version.dependencies {
-                    if dep.dependency_type == DependencyType::Incompatible
-                        && let Some(ref dep_project_id) = dep.project_id {
-                            let is_installed = filtered
-                                .iter()
-                                .any(|m| m.current_version.project_id == *dep_project_id);
-                            if is_installed {
-                                tracing::warn!(
-                                    mod_name = %candidate.identified.current_version.name,
-                                    incompatible_project = %dep_project_id,
-                                    "update introduces an incompatibility with an installed mod"
-                                );
-                            }
-                        }
-                }
-
                 candidate.project = project;
                 candidate
             }
@@ -388,6 +372,40 @@ pub async fn run(
         .buffer_unordered(4)
         .collect()
         .await;
+
+    // ── 6b. Warn about incompatibilities the updates would introduce ─────
+    //
+    // The graph is built over `identified` — the full installed set — so a
+    // conflict with a filter-excluded mod is still reported. Warn-only:
+    // nothing here blocks, skips, or cancels an update.
+    let before = deps::build(&identified);
+    let updates: Vec<(String, ModVersion)> = candidates
+        .iter()
+        .map(|c| {
+            (
+                c.identified.current_version.project_id.clone(),
+                c.latest_version.clone(),
+            )
+        })
+        .collect();
+    let projected = deps::project_updates(&identified, &updates);
+    let after = deps::build(&projected);
+    let introduced = deps::newly_incompatible(&before, &after);
+
+    let warnings: Vec<String> = introduced
+        .iter()
+        .map(|p| {
+            format!(
+                "Update introduces incompatibility: {} conflicts with {}",
+                p.project_name, p.conflicts_with_name
+            )
+        })
+        .collect();
+
+    for w in &warnings {
+        tracing::warn!("{}", w);
+    }
+    progress.report_warnings(&warnings);
 
     // ── 7. Print summary table ───────────────────────────────────────────
     let temp_updated_outcomes: Vec<ModOutcome> = candidates
