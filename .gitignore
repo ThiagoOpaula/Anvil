@@ -9,3 +9,7 @@ __pycache__/
 !.claude/settings.json
 !.claude/workflows/
 !.claude/workflows/**
+
+# GUI snapshot test diffs
+**/tests/snapshots/**/*.diff.png
+**/tests/snapshots/**/*.new.png

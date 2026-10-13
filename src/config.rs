@@ -261,7 +261,7 @@ pub fn resolve_from_file(
 
     let changelog = file.changelog.unwrap_or(false);
 
-    let dark_mode = file.dark_mode.unwrap_or(false);
+    let dark_mode = file.dark_mode.unwrap_or(true);
 
     Ok(ResolvedConfig {
         mods_dir,

@@ -6,8 +6,13 @@
 
 pub mod app;
 pub mod progress;
+pub mod state;
 pub mod tabs;
+pub mod theme;
+pub mod util;
+pub mod widgets;
 pub mod worker;
 
 pub use app::AnvilApp;
+pub use state::{AppState, Tab};
 pub use worker::{spawn_worker, WorkerHandle};

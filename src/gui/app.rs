@@ -12,35 +12,8 @@ use crate::config::{ResolvedConfig, SettingsForm};
 use crate::discover::DiscoveredModsDir;
 use crate::types::{IdentifiedMod, ImportedMod, ModOutcome, Profile, RunSummary};
 
+use super::state::{ExportFormat, Tab};
 use super::worker::{spawn_worker, GuiCommand, WorkerEvent, WorkerHandle};
-
-// ── Tab enum ───────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Scan,
-    Updates,
-    Settings,
-    Rollback,
-}
-
-impl Tab {
-    fn label(self) -> &'static str {
-        match self {
-            Tab::Scan => "Scan & Identify",
-            Tab::Updates => "Updates",
-            Tab::Settings => "Settings",
-            Tab::Rollback => "Rollback",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExportFormat {
-    Csv,
-    Markdown,
-    Json,
-}
 
 // ── Log entry ──────────────────────────────────────────────────────────────
 
@@ -402,25 +375,11 @@ impl AnvilApp {
             .collect()
     }
 
-    fn outcome_icon(outcome: &ModOutcome) -> &'static str {
-        match outcome {
-            ModOutcome::Updated { .. } => "\u{2b06}",
-            ModOutcome::UpToDate { .. } => "\u{2713}",
-            ModOutcome::Unavailable { .. } => "\u{2717}",
-            ModOutcome::Unknown { .. } => "?",
-            ModOutcome::FilteredOut { .. } => "\u{2298}",
-            ModOutcome::Failed { .. } => "!",
-        }
-    }
     fn apply_theme(&mut self, ctx: &egui::Context) {
-        if self.settings_dark_mode != self.applied_dark_mode {
-            if self.settings_dark_mode {
-                ctx.set_visuals(egui::Visuals::dark());
-            } else {
-                ctx.set_visuals(egui::Visuals::light());
-            }
-            self.applied_dark_mode = self.settings_dark_mode;
-        }
+        // Always apply on first frame (applied_dark_mode starts matching settings).
+        // After that, only re-apply when the toggle changes.
+        crate::gui::theme::apply_theme(ctx, self.settings_dark_mode);
+        self.applied_dark_mode = self.settings_dark_mode;
     }
 
     fn export_scan_results(&self, format: ExportFormat) -> String {
@@ -516,7 +475,7 @@ impl AnvilApp {
 // ── eframe::App impl ──────────────────────────────────────────────────────
 
 impl eframe::App for AnvilApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Drain worker events (non-blocking).
         self.process_events();
         self.apply_theme(ctx);
@@ -592,7 +551,7 @@ impl eframe::App for AnvilApp {
                                 }
                             }
                             "csv" => {
-                                let mods = parse_imported_csv(&content);
+                                let mods = super::util::parse_imported_csv(&content);
                                 if !mods.is_empty() {
                                     self.set_imported_mods_deduped(mods);
                                     self.log_messages.push(LogEntry {
@@ -633,7 +592,7 @@ impl eframe::App for AnvilApp {
         }
 
         // Keyboard shortcuts (only when no text field is focused).
-        if !ctx.wants_keyboard_input() {
+        if !ctx.egui_wants_keyboard_input() {
             ctx.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::CTRL, egui::Key::R) {
                     self.active_tab = Tab::Scan;
@@ -659,46 +618,129 @@ impl eframe::App for AnvilApp {
             });
         }
 
-        // ── Top tab bar ──────────────────────────────────────────────────
-        egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                for tab in &[Tab::Scan, Tab::Updates, Tab::Settings, Tab::Rollback] {
-                    ui.selectable_value(&mut self.active_tab, *tab, tab.label());
+        // Persist window geometry when the window is closing.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let geo_path = crate::paths::config_dir().join("window.json");
+            if let Some(parent) = geo_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+                let geo = serde_json::json!({
+                    "width": rect.size().x,
+                    "height": rect.size().y,
+                    "x": rect.min.x,
+                    "y": rect.min.y,
+                });
+                if let Ok(json) = serde_json::to_string_pretty(&geo) {
+                    let _ = std::fs::write(&geo_path, json);
+                }
+            }
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // ── Left sidebar ─────────────────────────────────────────────────
+        egui::Panel::left("sidebar")
+            .resizable(false)
+            .exact_size(200.0)
+            .show(ui, |ui| {
+                let sidebar = super::widgets::sidebar::Sidebar {
+                    active: self.active_tab,
+                    version: env!("CARGO_PKG_VERSION"),
+                    has_update: self.app_update_info.as_ref().is_some_and(|i| i.is_newer),
+                    dark_mode: self.settings_dark_mode,
+                };
+                let result = sidebar.show(ui);
+                if let Some(tab) = result.switch_to {
+                    self.active_tab = tab;
+                }
+                if result.toggle_theme {
+                    self.settings_dark_mode = !self.settings_dark_mode;
+                    self.applied_dark_mode = !self.applied_dark_mode;
+                    super::theme::apply_theme(ui.ctx(), self.settings_dark_mode);
                 }
             });
-            // Show update banner if a newer version is available.
+
+        // ── Top banner (app update) ──────────────────────────────────────
+        egui::Panel::top("update_banner").show(ui, |ui| {
             if let Some(ref info) = self.app_update_info
                 && info.is_newer
                 && !self.update_banner_dismissed
             {
-                ui.separator();
                 ui.horizontal(|ui| {
-                    ui.colored_label(
-                        egui::Color32::YELLOW,
-                        format!(
+                    ui.label(
+                        egui::RichText::new(format!(
                             "Anvil {} is available! You are running {}.",
                             info.latest_version, info.current_version
-                        ),
+                        ))
+                        .color(crate::gui::theme::WARNING),
                     );
                     ui.hyperlink_to("Download", &info.url);
                     if ui.small_button("Dismiss").clicked() {
                         self.update_banner_dismissed = true;
                     }
                 });
+                ui.separator();
             }
         });
 
-        // ── Central content ──────────────────────────────────────────────
-        egui::CentralPanel::default().show(ctx, |ui| match self.active_tab {
-            Tab::Scan => self.render_scan_tab(ui),
-            Tab::Updates => self.render_updates_tab(ui),
-            Tab::Settings => self.render_settings_tab(ui),
-            Tab::Rollback => self.render_rollback_tab(ui),
+        // ── Bottom status bar ────────────────────────────────────────────
+        egui::Panel::bottom("status_bar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if let Some(ref phase) = self.current_phase {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}: {}/{}",
+                            phase.label, self.progress_current, self.progress_total
+                        ))
+                        .color(crate::gui::theme::TEXT_SECONDARY),
+                    );
+                    if self.progress_total > 0 {
+                        let frac = self.progress_current as f32 / self.progress_total as f32;
+                        let bar = egui::ProgressBar::new(frac)
+                            .desired_width(200.0)
+                            .fill(crate::gui::theme::ACCENT);
+                        ui.add(bar);
+                    }
+                    if super::widgets::buttons::danger_button(ui, "Cancel").clicked() {
+                        self.worker.send_command(GuiCommand::Cancel);
+                    }
+                } else if self.worker_busy {
+                    ui.spinner();
+                    ui.label(
+                        egui::RichText::new("Working...")
+                            .color(crate::gui::theme::TEXT_SECONDARY),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new("Idle")
+                            .color(crate::gui::theme::TEXT_MUTED),
+                    );
+                }
+
+                if let Some(last) = self.log_messages.last() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(&last.message)
+                                .small()
+                                .color(crate::gui::theme::TEXT_MUTED),
+                        );
+                    });
+                }
+            });
         });
 
-        // Push the settings form into the shared config once per frame, after
-        // every tab has rendered. Idempotent; previously this only ran while
-        // the Updates tab was open, which was an accident of tab order.
+        // ── Central content ──────────────────────────────────────────────
+        egui::CentralPanel::default().show(ui, |ui| {
+            match self.active_tab {
+                Tab::Scan => self.render_scan_tab(ui),
+                Tab::Updates => self.render_updates_tab(ui),
+                Tab::Settings => self.render_settings_tab(ui),
+                Tab::Rollback => self.render_rollback_tab(ui),
+            }
+        });
+
+        // Push the settings form into the shared config once per frame.
         self.sync_config_to_worker();
 
         // ── Confirmation dialog ──────────────────────────────────────────
@@ -711,14 +753,15 @@ impl eframe::App for AnvilApp {
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .show(ctx, |ui| {
+                .show(ui.ctx(), |ui| {
                     ui.label(&question);
+                    ui.add_space(crate::gui::theme::SPACE_MD);
                     ui.horizontal(|ui| {
-                        if ui.button("Yes").clicked() {
+                        if super::widgets::buttons::primary_button(ui, "Confirm").clicked() {
                             answer = true;
                             closed = true;
                         }
-                        if ui.button("No").clicked() {
+                        if super::widgets::buttons::secondary_button(ui, "Cancel").clicked() {
                             answer = false;
                             closed = true;
                         }
@@ -739,63 +782,9 @@ impl eframe::App for AnvilApp {
             }
         }
 
-        // ── Bottom status bar ────────────────────────────────────────────
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(ref phase) = self.current_phase {
-                    ui.label(format!(
-                        "{}: {}/{}",
-                        phase.label, self.progress_current, self.progress_total
-                    ));
-                    if self.progress_total > 0 {
-                        let frac = self.progress_current as f32 / self.progress_total as f32;
-                        let bar = egui::ProgressBar::new(frac).desired_width(200.0);
-                        ui.add(bar);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.worker.send_command(GuiCommand::Cancel);
-                    }
-                } else if self.worker_busy {
-                    ui.spinner();
-                    ui.label("Working...");
-                } else {
-                    ui.label("Idle");
-                }
-
-                if let Some(last) = self.log_messages.last() {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new(&last.message)
-                                .small()
-                                .color(egui::Color32::GRAY),
-                        );
-                    });
-                }
-            });
-        });
-
         // Request repaint if worker is busy (for smooth progress updates).
         if self.worker_busy {
-            ctx.request_repaint();
-        }
-
-        // Persist window geometry when the window is closing.
-        if ctx.input(|i| i.viewport().close_requested()) {
-            let geo_path = crate::paths::config_dir().join("window.json");
-            if let Some(parent) = geo_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
-                let geo = serde_json::json!({
-                    "width": rect.size().x,
-                    "height": rect.size().y,
-                    "x": rect.min.x,
-                    "y": rect.min.y,
-                });
-                if let Ok(json) = serde_json::to_string_pretty(&geo) {
-                    let _ = std::fs::write(&geo_path, json);
-                }
-            }
+            ui.ctx().request_repaint();
         }
     }
 }
@@ -1135,71 +1124,81 @@ impl AnvilApp {
     }
 
     fn render_updates_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Updates");
+        use crate::gui::widgets::{badge, buttons, card, empty_state, stat_tiles};
 
-        // Warnings from the last run — informational only; nothing was blocked.
-        for warning in &self.update_warnings {
-            ui.colored_label(egui::Color32::YELLOW, format!("\u{26a0} {}", warning));
+        // Warnings banner
+        for warning in &self.update_warnings.clone() {
+            empty_state::WarningBanner::new(warning).show(ui);
+            ui.add_space(crate::gui::theme::SPACE_XS);
         }
 
-        // Target game version & loader — live here so users see what
-        // they're updating to without switching to the Settings tab.
-        ui.horizontal(|ui| {
-            ui.label("Game version:");
-            egui::ComboBox::from_id_salt("updates_game_version")
-                .width(100.0)
-                .selected_text(if self.settings_game_version.is_empty() {
-                    "(auto)"
-                } else {
-                    &self.settings_game_version
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.settings_game_version,
-                        String::new(),
-                        "(auto-detect)",
-                    );
-                    for v in &self.game_versions.clone() {
+        // Target platform card
+        card::SectionCard::new("Target Platform").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Game version:")
+                        .color(crate::gui::theme::TEXT_SECONDARY),
+                );
+                egui::ComboBox::from_id_salt("updates_game_version")
+                    .width(120.0)
+                    .selected_text(if self.settings_game_version.is_empty() {
+                        "(auto)"
+                    } else {
+                        &self.settings_game_version
+                    })
+                    .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.settings_game_version,
-                            v.clone(),
-                            v.clone(),
+                            String::new(),
+                            "(auto-detect)",
                         );
-                    }
-                });
+                        for v in &self.game_versions.clone() {
+                            ui.selectable_value(
+                                &mut self.settings_game_version,
+                                v.clone(),
+                                v.clone(),
+                            );
+                        }
+                    });
 
-            ui.label("Loader:");
-            egui::ComboBox::from_id_salt("updates_loader")
-                .width(90.0)
-                .selected_text(if self.settings_loader.is_empty() {
-                    "(auto)"
-                } else {
-                    &self.settings_loader
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.settings_loader,
-                        String::new(),
-                        "(auto-detect)",
-                    );
-                    for l in &self.loaders.clone() {
+                ui.add_space(crate::gui::theme::SPACE_MD);
+                ui.label(
+                    egui::RichText::new("Loader:")
+                        .color(crate::gui::theme::TEXT_SECONDARY),
+                );
+                egui::ComboBox::from_id_salt("updates_loader")
+                    .width(100.0)
+                    .selected_text(if self.settings_loader.is_empty() {
+                        "(auto)"
+                    } else {
+                        &self.settings_loader
+                    })
+                    .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.settings_loader,
-                            l.clone(),
-                            l.clone(),
+                            String::new(),
+                            "(auto-detect)",
                         );
-                    }
-                });
+                        for l in &self.loaders.clone() {
+                            ui.selectable_value(
+                                &mut self.settings_loader,
+                                l.clone(),
+                                l.clone(),
+                            );
+                        }
+                    });
+            });
         });
+        ui.add_space(crate::gui::theme::SPACE_SM);
 
+        // Action buttons
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !self.worker_busy,
-                    egui::Button::new("Check for Updates"),
-                )
-                .clicked()
-            {
+            let check_btn = if self.worker_busy {
+                buttons::secondary_button(ui, "Checking...")
+            } else {
+                buttons::primary_button(ui, "Check for Updates")
+            };
+            if check_btn.clicked() {
                 self.update_outcomes.clear();
                 self.candidates_count = 0;
                 self.summary = None;
@@ -1209,16 +1208,13 @@ impl AnvilApp {
             }
 
             let can_download = self.candidates_count > 0 && !self.worker_busy;
-            if ui
-                .add_enabled(
-                    can_download,
-                    egui::Button::new(format!(
-                        "Download {} Update(s)",
-                        self.candidates_count
-                    )),
-                )
-                .clicked()
-            {
+            let dl_text = format!("Download {} Update(s)", self.candidates_count);
+            let dl_btn = if can_download {
+                buttons::primary_button(ui, &dl_text)
+            } else {
+                buttons::secondary_button(ui, &dl_text)
+            };
+            if dl_btn.clicked() && can_download {
                 self.update_outcomes.clear();
                 self.summary = None;
                 self.worker.send_command(GuiCommand::DownloadUpdates);
@@ -1229,50 +1225,76 @@ impl AnvilApp {
             }
         });
 
-        ui.separator();
+        ui.add_space(crate::gui::theme::SPACE_SM);
 
-        // Summary
+        // Summary stat tiles
         if let Some(ref summary) = self.summary {
-            ui.group(|ui| {
-                ui.label(format!("Total JARs: {}", summary.total_jars));
-                ui.label(format!("Identified: {}", summary.identified));
-                ui.label(format!("Updates applied: {}", summary.updates_applied));
-                ui.label(format!("Up-to-date: {}", summary.up_to_date));
-                ui.label(format!("Unavailable: {}", summary.unavailable));
-                ui.label(format!("Skipped: {}", summary.skipped));
-                ui.label(format!("Failed: {}", summary.failed));
+            ui.horizontal(|ui| {
+                stat_tiles::StatTile::new(
+                    summary.updates_applied.to_string(),
+                    "Updates",
+                )
+                .accent(crate::gui::theme::ACCENT)
+                .show(ui);
+                stat_tiles::StatTile::new(
+                    summary.up_to_date.to_string(),
+                    "Up to date",
+                )
+                .accent(crate::gui::theme::TEXT_SECONDARY)
+                .show(ui);
+                stat_tiles::StatTile::new(
+                    summary.unavailable.to_string(),
+                    "Unavailable",
+                )
+                .accent(crate::gui::theme::WARNING)
+                .show(ui);
+                stat_tiles::StatTile::new(summary.failed.to_string(), "Failed")
+                    .accent(crate::gui::theme::ERROR)
+                    .show(ui);
             });
+            ui.add_space(crate::gui::theme::SPACE_SM);
         }
 
-        ui.separator();
-
-        // Show what the check was performed with.
+        // Context line
         ui.horizontal(|ui| {
-            ui.label("Checking with:");
+            ui.label(
+                egui::RichText::new("Checking with:")
+                    .size(crate::gui::theme::FONT_CAPTION)
+                    .color(crate::gui::theme::TEXT_MUTED),
+            );
             let gv = self.settings_game_version.as_str();
             let ld = self.settings_loader.as_str();
             if gv.is_empty() && ld.is_empty() {
-                ui.label("(auto-detect per mod)");
+                ui.label(
+                    egui::RichText::new("(auto-detect per mod)")
+                        .size(crate::gui::theme::FONT_CAPTION)
+                        .color(crate::gui::theme::TEXT_MUTED),
+                );
             } else {
                 if !gv.is_empty() {
-                    ui.label(format!("MC {gv}"));
+                    ui.label(
+                        egui::RichText::new(format!("MC {gv}"))
+                            .size(crate::gui::theme::FONT_CAPTION)
+                            .color(crate::gui::theme::TEXT_SECONDARY),
+                    );
                 }
                 if !ld.is_empty() {
-                    ui.label(format!("/ {ld}"));
+                    ui.label(
+                        egui::RichText::new(format!("/ {ld}"))
+                            .size(crate::gui::theme::FONT_CAPTION)
+                            .color(crate::gui::theme::TEXT_SECONDARY),
+                    );
                 }
-            }
-            if let Some(ref summary) = self.summary {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!(
-                        "{} available update(s)",
-                        summary.updates_applied
-                    ));
-                });
             }
         });
 
+        ui.add_space(crate::gui::theme::SPACE_SM);
+
+        // Outcomes list
         if self.update_outcomes.is_empty() {
-            ui.label("No results yet. Click 'Check for Updates' to scan for updates.");
+            empty_state::EmptyState::new("\u{2b06}", "No results yet")
+                .subtitle("Click 'Check for Updates' to scan for available updates.")
+                .show(ui);
         } else {
             let available_height = ui.available_height().max(150.0);
             egui::ScrollArea::vertical()
@@ -1282,39 +1304,47 @@ impl AnvilApp {
                     egui_extras::TableBuilder::new(ui)
                         .striped(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(egui_extras::Column::exact(24.0))
+                        .column(egui_extras::Column::exact(80.0))
                         .column(egui_extras::Column::remainder().at_least(120.0))
                         .column(egui_extras::Column::remainder().at_least(80.0))
                         .column(egui_extras::Column::remainder().at_least(80.0))
-                        .header(20.0, |mut header| {
+                        .header(24.0, |mut header| {
                             header.col(|ui| {
-                                ui.strong("");
+                                ui.strong("Status");
                             });
                             header.col(|ui| {
                                 ui.strong("Mod");
                             });
                             header.col(|ui| {
-                                ui.strong("Cur. Version");
+                                ui.strong("Current");
                             });
                             header.col(|ui| {
-                                ui.strong("Latest Version");
+                                ui.strong("Latest");
                             });
                         })
                         .body(|body| {
-                            body.rows(18.0, self.update_outcomes.len(), |mut row| {
+                            body.rows(28.0, self.update_outcomes.len(), |mut row| {
                                 let idx = row.index();
                                 if let Some(outcome) = self.update_outcomes.get(idx) {
                                     row.col(|ui| {
-                                        ui.label(Self::outcome_icon(outcome));
+                                        badge::StatusBadge::from_outcome(outcome).show(ui);
                                     });
                                     row.col(|ui| {
                                         render_outcome_label(ui, outcome);
                                     });
                                     row.col(|ui| {
-                                        ui.label(outcome_current(outcome));
+                                        ui.label(
+                                            egui::RichText::new(super::util::outcome_current(outcome))
+                                                .size(crate::gui::theme::FONT_CAPTION)
+                                                .color(crate::gui::theme::TEXT_SECONDARY),
+                                        );
                                     });
                                     row.col(|ui| {
-                                        ui.label(outcome_latest(outcome));
+                                        ui.label(
+                                            egui::RichText::new(super::util::outcome_latest(outcome))
+                                                .size(crate::gui::theme::FONT_CAPTION)
+                                                .color(crate::gui::theme::TEXT_PRIMARY),
+                                        );
                                     });
                                 }
                             });
@@ -1647,8 +1677,8 @@ impl AnvilApp {
 
     /// A non-clashing profile name for a detected folder, e.g. `prism-spark`.
     fn unique_profile_name(&self, detected: &DiscoveredModsDir) -> String {
-        let base = match instance_label(&detected.mods_dir) {
-            Some(instance) => format!("{}-{}", detected.launcher.slug(), slugify(&instance)),
+        let base = match super::util::instance_label(&detected.mods_dir) {
+            Some(instance) => format!("{}-{}", detected.launcher.slug(), super::util::slugify(&instance)),
             None => detected.launcher.slug().to_string(),
         };
 
@@ -1799,8 +1829,8 @@ impl AnvilApp {
             loader: (!self.settings_loader.is_empty()).then(|| self.settings_loader.clone()),
             game_version: (!self.settings_game_version.is_empty())
                 .then(|| self.settings_game_version.clone()),
-            include: split_patterns(&self.settings_include),
-            exclude: split_patterns(&self.settings_exclude),
+            include: super::util::split_patterns(&self.settings_include),
+            exclude: super::util::split_patterns(&self.settings_exclude),
             max_updates: self.settings_max_updates.parse::<usize>().ok(),
             confirm: self.settings_confirm,
             changelog: self.settings_changelog,
@@ -1824,59 +1854,6 @@ impl AnvilApp {
 
 // ── Outcome display helpers ────────────────────────────────────────────────
 
-/// The instance/profile folder that owns a mods dir, if it is informative.
-///
-/// `…/instances/spark/minecraft/mods` → `spark`; `~/.minecraft/mods` → `None`
-/// (the official launcher has no instance folder there).
-fn instance_label(mods_dir: &std::path::Path) -> Option<String> {
-    let parent = mods_dir.parent()?;
-    let parent_name = parent.file_name()?.to_string_lossy().to_lowercase();
-
-    let candidate = match parent_name.as_str() {
-        "minecraft" | ".minecraft" => parent
-            .parent()?
-            .file_name()?
-            .to_string_lossy()
-            .to_lowercase(),
-        _ => parent_name,
-    };
-
-    // `~/.minecraft/mods` would otherwise be named after the user's home dir.
-    let is_home_dir = dirs::home_dir()
-        .and_then(|home| home.file_name().map(|n| n.to_string_lossy().to_lowercase()))
-        .is_some_and(|home| home == candidate);
-
-    if candidate == "mods" || candidate.starts_with('.') || is_home_dir {
-        None
-    } else {
-        Some(candidate)
-    }
-}
-
-/// Lower-case, TOML-friendly form of a folder name.
-fn slugify(text: &str) -> String {
-    let slug: String = text
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    slug.trim_matches('-').to_string()
-}
-
-/// Comma-separated patterns → `Some(list)`, or `None` when the field is blank
-/// (so clearing the field removes the key instead of writing an empty list).
-fn split_patterns(text: &str) -> Option<Vec<String>> {
-    if text.trim().is_empty() {
-        return None;
-    }
-    Some(
-        text.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect(),
-    )
-}
-
 fn render_outcome_label(ui: &mut egui::Ui, outcome: &ModOutcome) {
     match outcome {
         ModOutcome::Updated { slug, .. }
@@ -1885,84 +1862,7 @@ fn render_outcome_label(ui: &mut egui::Ui, outcome: &ModOutcome) {
             ui.hyperlink_to(slug.as_str(), format!("https://modrinth.com/mod/{}", slug));
         }
         _ => {
-            ui.label(outcome_label(outcome));
+            ui.label(super::util::outcome_label(outcome));
         }
     }
-}
-
-fn outcome_label(outcome: &ModOutcome) -> &str {
-    match outcome {
-        ModOutcome::Updated { slug, .. }
-        | ModOutcome::UpToDate { slug, .. }
-        | ModOutcome::Unavailable { slug, .. } => slug,
-        ModOutcome::Unknown { filename } => filename,
-        ModOutcome::FilteredOut { filename, .. } => filename,
-        ModOutcome::Failed { filename, .. } => filename,
-    }
-}
-
-fn outcome_current(outcome: &ModOutcome) -> &str {
-    match outcome {
-        ModOutcome::Updated { old_version, .. } => old_version,
-        ModOutcome::UpToDate { version, .. } => version,
-        ModOutcome::Unavailable {
-            current_version, ..
-        } => current_version,
-        _ => "\u{2014}",
-    }
-}
-
-fn outcome_latest(outcome: &ModOutcome) -> &str {
-    match outcome {
-        ModOutcome::Updated { new_version, .. } => new_version,
-        ModOutcome::UpToDate { version, .. } => version,
-        _ => "\u{2014}",
-    }
-}
-
-/// Parse an imported CSV file with header row and project_id column.
-///
-/// Expected format (matching what export generates):
-/// `Filename,Name,Version,Project ID,Loader,Game Versions`
-/// Each row is parsed, the Project ID column is required.
-fn parse_imported_csv(content: &str) -> Vec<ImportedMod> {
-    let mut mods = Vec::new();
-    for (i, line) in content.lines().enumerate() {
-        if i == 0 || line.trim().is_empty() {
-            continue; // Skip header and blank lines
-        }
-        // Simple comma split — handles basic CSV without quoting (the export
-        // format quotes everything, but for import we accept both).
-        let fields: Vec<&str> = line.split(',').map(|s| s.trim().trim_matches('"')).collect();
-        if fields.len() >= 4 {
-            let project_id = fields[3].to_string();
-            if !project_id.is_empty() {
-                mods.push(ImportedMod {
-                    project_id,
-                    slug: None,
-                    name: if fields.len() > 1 && !fields[1].is_empty() {
-                        Some(fields[1].to_string())
-                    } else {
-                        None
-                    },
-                    version_number: if fields.len() > 2 && !fields[2].is_empty() {
-                        Some(fields[2].to_string())
-                    } else {
-                        None
-                    },
-                    loaders: if fields.len() > 4 && !fields[4].is_empty() {
-                        fields[4].split(", ").map(|s| s.to_string()).collect()
-                    } else {
-                        vec![]
-                    },
-                    game_versions: if fields.len() > 5 && !fields[5].is_empty() {
-                        fields[5].split(", ").map(|s| s.to_string()).collect()
-                    } else {
-                        vec![]
-                    },
-                });
-            }
-        }
-    }
-    mods
 }
