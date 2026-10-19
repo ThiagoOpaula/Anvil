@@ -10,6 +10,9 @@ __pycache__/
 !.claude/workflows/
 !.claude/workflows/**
 
+# Agent scaffolding — plans, node_modules, session state
+.mimocode/
+
 # GUI snapshot test diffs
 **/tests/snapshots/**/*.diff.png
 **/tests/snapshots/**/*.new.png
