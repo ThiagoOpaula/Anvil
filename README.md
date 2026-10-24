@@ -48,7 +48,7 @@ It auto-detects your mods folder. No config required.
 
 Updating mods manually is tedious — search Modrinth, check loader and game-version compatibility, download JARs, drag them into the folder, pray nothing broke.
 
-Anvil automates all of that. Point it at your mods folder and it scans every JAR by its content hash, queries the Modrinth API for updates, and downloads the right version — matching your exact Minecraft version and mod loader. No launcher required. No lock-in. No bloat.
+Anvil automates all of that. Point it at your mods folder and it scans every JAR by its content hash, queries the Modrinth API for updates, and downloads the right version — matching your exact Minecraft version and mod loader. Resource packs and shader packs in the sibling folders are picked up the same way. No launcher required. No lock-in. No bloat.
 
 Before applying updates, Anvil creates a timestamped backup and verifies every download by SHA1. If something goes wrong, one command restores the previous state.
 
@@ -194,7 +194,7 @@ anvil --mods-dir "D:\modpack\mods" --dry-run
 
 Anvil is designed with safety as a core principle:
 
-- **📦 Auto backup** — before applying updates, Anvil moves the current JARs into a timestamped backup directory (`backup_DD-MM-YYYY_mc{version}`)
+- **📦 Auto backup** — before applying updates, Anvil moves the current files into a timestamped backup directory (`backup_DD-MM-YYYY_mc{version}`), one per folder
 - **🔐 SHA1 verification** — every downloaded file is hash-checked against Modrinth's records. Corrupted or tampered downloads are rejected
 - **♻️ Rollback** — `anvil rollback` restores mods from the last backup. If a rollback itself goes wrong, Anvil creates a *safety backup* of the current state before restoring
 - **👁️ Dry-run mode** — `--dry-run` shows what would happen without downloading or modifying any files. Preview before you commit
@@ -208,7 +208,7 @@ Anvil is designed with safety as a core principle:
 
 | Feature | Description |
 |---------|-------------|
-| 🔍 **SHA1 identification** | Finds mods by content hash — rename-safe, no filename guessing |
+| 🔍 **SHA1 identification** | Finds mods, resource packs and shaders by content hash — rename-safe, no filename guessing |
 | 📦 **Auto backup** | Timestamped snapshots before every update |
 | 🔄 **Rollback** | `anvil rollback` restores everything |
 | 📝 **Changelogs** | `--changelog` reads what's new before updating |
@@ -250,16 +250,19 @@ Anvil is designed with safety as a core principle:
 ## 🔧 How It Works
 
 ```
-your mods folder
+your instance folder
     │
-    ├── sodium-0.5.11.jar  ──SHA1──▶  Modrinth API  ──▶  "v0.6.1 available!"
-    ├── iris-1.7.5.jar     ──SHA1──▶  Modrinth API  ──▶  "Already latest ✓"
-    ├── mystery.jar         ──SHA1──▶  Modrinth API  ──▶  "Not on Modrinth — skipped"
+    ├── mods/
+    ├── ├── sodium-0.5.11.jar  ──SHA1──▶  Modrinth API  ──▶  "v0.6.1 available!"
+    ├── ├── iris-1.7.5.jar     ──SHA1──▶  Modrinth API  ──▶  "Already latest ✓"
+    ├── └── mystery.jar         ──SHA1──▶  Modrinth API  ──▶  "Not on Modrinth — skipped"
+    ├── resourcepacks/          ──SHA1──▶  Modrinth API  ──▶  same pipeline
+    ├── shaderpacks/            ──SHA1──▶  Modrinth API  ──▶  same pipeline
     └── ...
            │
            ▼
     ┌──────────────────────────────────┐
-    │  backup_17-06-2026_mc1.21.1/     │  ← old JARs moved here
+    │  backup_17-06-2026_mc1.21.1/     │  ← old files moved here
     │  └── sodium-0.5.11.jar           │
     └──────────────────────────────────┘
            │
@@ -272,6 +275,7 @@ your mods folder
 ```
 
 - **Hash-based** — no filename parsing, no guessing. SHA1 the file, ask Modrinth.
+- **Beyond mods** — `resourcepacks/` and `shaderpacks/` next to `mods/` are scanned, updated, and backed up in place. `--loader` is a mod-only filter, so it never hides your packs.
 - **Parallel** — 4 concurrent HTTP connections, streaming downloads with progress bars.
 - **Safe** — backups first, SHA1 verification, `--dry-run` previews everything.
 
@@ -329,7 +333,6 @@ The GUI Settings tab writes this file automatically.
 | 📦 | Modpack support — import and update `.mrpack` files |
 | 🔄 | Self-updater — Anvil updates itself |
 | 🔎 | Mod discovery — browse Modrinth from inside the app |
-| 🎨 | Shaders + resource pack updates |
 
 See the [full roadmap](ROADMAP.md) for details.
 

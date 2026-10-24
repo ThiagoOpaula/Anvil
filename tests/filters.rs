@@ -154,3 +154,29 @@ fn include_matches_version_number() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].current_version.name, "Sodium");
 }
+
+#[test]
+fn loader_filter_exempts_resource_and_shader_packs() {
+    let mut pack = make_mod("Complementary", "5.0", &["minecraft"], &["1.21"]);
+    pack.path = PathBuf::from("/inst/shaderpacks/Complementary.zip");
+    pack.filename = "Complementary.zip".into();
+
+    let mod_ = make_mod("Sodium", "0.5.11", &["fabric"], &["1.21"]);
+
+    let opts = FilterOpts {
+        include: vec![],
+        exclude: vec![],
+        loader: Some("fabric".into()),
+        game_version: None,
+    };
+
+    let result = apply(&[pack, mod_], &opts);
+    let names: Vec<&str> = result
+        .iter()
+        .map(|m| m.current_version.name.as_str())
+        .collect();
+
+    // The mod survives (its loader matches); the pack survives too, because
+    // loader tags are a mod-only concept.
+    assert_eq!(names, vec!["Complementary", "Sodium"]);
+}

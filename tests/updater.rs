@@ -1026,3 +1026,114 @@ async fn conflict_with_filter_excluded_installed_mod_is_still_reported() {
 
     let _ = fs::remove_dir_all(&fx.dir);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── 23. Resource packs and shader packs update in their own folders ───────
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A pack must be replaced where it lives — never dragged into `mods/` — and
+/// its old version must be backed up inside the pack's own folder.
+#[tokio::test]
+async fn updates_packs_in_their_own_folders() {
+    let root = unique_temp_dir("packs");
+    let mods = root.join("mods");
+    let shaders = root.join("shaderpacks");
+    fs::create_dir_all(&mods).unwrap();
+    fs::create_dir_all(&shaders).unwrap();
+
+    let mod_content = b"pack-test-mod-old";
+    let mod_sha1 = sha1_hex(mod_content);
+    fs::write(mods.join("coolmod-1.0.jar"), mod_content).unwrap();
+
+    let shader_content = b"pack-test-shader-old";
+    let shader_sha1 = sha1_hex(shader_content);
+    fs::write(shaders.join("niceshader-1.0.zip"), shader_content).unwrap();
+
+    // MockApi serves one download payload, so both updates share it.
+    let new_content = b"pack-test-download-new";
+    let new_sha1 = sha1_hex(new_content);
+
+    let mut config = make_config(&mods);
+    config.backup = true;
+    config.confirm = true;
+
+    let api = MockApi::new();
+    let cache = ApiCache::new();
+    let progress = MockProgress::new();
+    progress.push_confirm(true);
+
+    api.set_version(
+        &mod_sha1,
+        Some(make_version("m1", "proj-mod", "CoolMod", "1.0.0", vec![])),
+    );
+    api.set_latest(
+        &mod_sha1,
+        Some(make_version(
+            "m2",
+            "proj-mod",
+            "CoolMod",
+            "2.0.0",
+            vec![make_file(
+                "https://dl.example/coolmod-2.0.jar",
+                "coolmod-2.0.jar",
+                &new_sha1,
+            )],
+        )),
+    );
+
+    api.set_version(
+        &shader_sha1,
+        Some(make_version(
+            "s1",
+            "proj-shader",
+            "NiceShader",
+            "1.0",
+            vec![],
+        )),
+    );
+    api.set_latest(
+        &shader_sha1,
+        Some(make_version(
+            "s2",
+            "proj-shader",
+            "NiceShader",
+            "2.0",
+            vec![make_file(
+                "https://dl.example/niceshader-2.0.zip",
+                "niceshader-2.0.zip",
+                &new_sha1,
+            )],
+        )),
+    );
+
+    api.set_download_content(new_content.to_vec(), None);
+
+    let summary = anvil::updater::run(&config, &api, &cache, &progress)
+        .await
+        .unwrap();
+
+    assert_eq!(summary.total_jars, 2, "the pack must be scanned too");
+    assert_eq!(summary.updates_applied, 2);
+
+    // Each new file landed in its own folder.
+    assert!(mods.join("coolmod-2.0.jar").exists());
+    assert!(
+        shaders.join("niceshader-2.0.zip").exists(),
+        "shader pack must stay in shaderpacks/"
+    );
+    assert!(
+        !mods.join("niceshader-2.0.zip").exists(),
+        "shader pack must not be written into mods/"
+    );
+
+    // The old shader was backed up inside shaderpacks/, not mods/.
+    let shader_backup = fs::read_dir(&shaders)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|n| n.starts_with("backup_"))
+        .expect("a backup directory should exist in shaderpacks/");
+    assert!(shaders.join(&shader_backup).join("niceshader-1.0.zip").exists());
+
+    let _ = fs::remove_dir_all(&root);
+}

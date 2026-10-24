@@ -12,16 +12,20 @@ use std::path::{Path, PathBuf};
 
 use anvil::scanner;
 
-// ── find_jars ───────────────────────────────────────────────────────
+// ── find_files ──────────────────────────────────────────────────────
 
 #[test]
-fn find_jars_nonexistent_dir() {
-    let result = scanner::find_jars(Path::new("/nonexistent/dir/abc123")).unwrap();
+fn find_files_nonexistent_dir() {
+    let result = scanner::find_files(
+        Path::new("/nonexistent/dir/abc123"),
+        scanner::PackKind::Mod,
+    )
+    .unwrap();
     assert!(result.is_empty());
 }
 
 #[test]
-fn find_jars_discovers_jar_files() {
+fn find_files_discovers_jar_files() {
     let dir = std::env::temp_dir().join(format!("anvil-find-jars-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
@@ -31,7 +35,7 @@ fn find_jars_discovers_jar_files() {
     fs::write(dir.join("readme.txt"), b"not a jar").unwrap();
     fs::create_dir(dir.join("subdir")).unwrap();
 
-    let jars = scanner::find_jars(&dir).unwrap();
+    let jars = scanner::find_files(&dir, scanner::PackKind::Mod).unwrap();
     assert_eq!(
         jars.len(),
         2,
@@ -49,15 +53,108 @@ fn find_jars_discovers_jar_files() {
 }
 
 #[test]
-fn find_jars_empty_directory() {
+fn find_files_packs_use_zip_not_jar() {
+    let dir = std::env::temp_dir().join(format!("anvil-find-zips-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    fs::write(dir.join("pack.zip"), b"zip").unwrap();
+    fs::write(dir.join("pack.ZIP"), b"zip").unwrap();
+    fs::write(dir.join("mod.jar"), b"jar").unwrap();
+
+    let zips = scanner::find_files(&dir, scanner::PackKind::ShaderPack).unwrap();
+    assert_eq!(zips.len(), 2, "packs are .zip (case-insensitive), not .jar");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn find_files_empty_directory() {
     let dir = std::env::temp_dir().join(format!("anvil-empty-dir-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    let jars = scanner::find_jars(&dir).unwrap();
+    let jars = scanner::find_files(&dir, scanner::PackKind::Mod).unwrap();
     assert!(jars.is_empty());
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ── scan_targets / find_all_files ───────────────────────────────────
+
+#[test]
+fn scan_targets_only_mods_when_no_siblings() {
+    let root = unique_temp_dir("targets-none");
+    let mods = root.join("mods");
+    fs::create_dir_all(&mods).unwrap();
+
+    let targets = scanner::scan_targets(&mods);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].kind, scanner::PackKind::Mod);
+    assert_eq!(targets[0].dir, mods);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn scan_targets_adds_existing_pack_folders() {
+    let root = unique_temp_dir("targets-packs");
+    let mods = root.join("mods");
+    fs::create_dir_all(&mods).unwrap();
+    fs::create_dir_all(root.join("shaderpacks")).unwrap();
+    // resourcepacks/ deliberately absent — it must not appear.
+
+    let targets = scanner::scan_targets(&mods);
+    let kinds: Vec<scanner::PackKind> = targets.iter().map(|t| t.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![scanner::PackKind::Mod, scanner::PackKind::ShaderPack],
+        "mods first, then only pack folders that exist"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn find_all_files_covers_mods_and_packs() {
+    let root = unique_temp_dir("all-files");
+    let mods = root.join("mods");
+    fs::create_dir_all(&mods).unwrap();
+    fs::create_dir_all(root.join("resourcepacks")).unwrap();
+    fs::create_dir_all(root.join("shaderpacks")).unwrap();
+
+    fs::write(mods.join("a.jar"), b"jar").unwrap();
+    fs::write(root.join("resourcepacks").join("b.zip"), b"zip").unwrap();
+    fs::write(root.join("shaderpacks").join("c.zip"), b"zip").unwrap();
+
+    let files = scanner::find_all_files(&mods).unwrap();
+    assert_eq!(files.len(), 3);
+
+    let names: Vec<String> = files
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.contains(&"a.jar".to_string()));
+    assert!(names.contains(&"b.zip".to_string()));
+    assert!(names.contains(&"c.zip".to_string()));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn pack_kind_classifies_by_folder() {
+    assert_eq!(
+        scanner::PackKind::of_path(Path::new("/inst/shaderpacks/x.zip")),
+        scanner::PackKind::ShaderPack
+    );
+    assert_eq!(
+        scanner::PackKind::of_path(Path::new("/inst/resourcepacks/x.zip")),
+        scanner::PackKind::ResourcePack
+    );
+    assert_eq!(
+        scanner::PackKind::of_path(Path::new("/inst/mods/x.jar")),
+        scanner::PackKind::Mod
+    );
 }
 
 // ── compute_sha1 ────────────────────────────────────────────────────

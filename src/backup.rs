@@ -115,8 +115,7 @@ pub fn rollback(mods_dir: &Path) -> Result<usize> {
         if path.is_file()
             && path
                 .extension()
-                .map(|e| e == "jar")
-                .unwrap_or(false)
+                .is_some_and(|e| e.eq_ignore_ascii_case("jar") || e.eq_ignore_ascii_case("zip"))
         {
             if let Some(name) = path.file_name() {
                 fs::rename(&path, safety_dir.join(name))?;
@@ -126,7 +125,7 @@ pub fn rollback(mods_dir: &Path) -> Result<usize> {
     }
     if safety_count > 0 {
         tracing::info!(
-            "safety backup: moved {safety_count} JAR(s) to {}",
+            "safety backup: moved {safety_count} file(s) to {}",
             safety_dir.display()
         );
     }

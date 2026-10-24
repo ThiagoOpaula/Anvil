@@ -1,5 +1,9 @@
-//! JAR file discovery, SHA1 hashing, and batch identification against the
+//! Content discovery, SHA1 hashing, and batch identification against the
 //! Modrinth API.
+//!
+//! Modrinth identifies files by hash regardless of what they are, so mods,
+//! resource packs and shader packs all flow through the same pipeline. The
+//! only differences are the folder each lives in and its extension.
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -12,19 +16,108 @@ use tracing;
 use crate::error::Error;
 use crate::types::{ApiClient, IdentifiedMod};
 
+// ── Content kinds ─────────────────────────────────────────────────────────
+
+/// A kind of Minecraft content Anvil can identify and update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackKind {
+    /// A mod: `.jar` in `mods/`.
+    Mod,
+    /// A resource pack: `.zip` in `resourcepacks/`.
+    ResourcePack,
+    /// A shader pack: `.zip` in `shaderpacks/`.
+    ShaderPack,
+}
+
+impl PackKind {
+    /// File extension without the leading dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Mod => "jar",
+            Self::ResourcePack | Self::ShaderPack => "zip",
+        }
+    }
+
+    /// Folder name, relative to the Minecraft instance root.
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            Self::Mod => "mods",
+            Self::ResourcePack => "resourcepacks",
+            Self::ShaderPack => "shaderpacks",
+        }
+    }
+
+    /// Human-readable label for tables and logs.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mod => "Mod",
+            Self::ResourcePack => "Resource pack",
+            Self::ShaderPack => "Shader pack",
+        }
+    }
+
+    /// Classify a file by the folder it sits in.
+    pub fn of_path(path: &Path) -> Self {
+        let in_dir = |kind: Self| {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case(kind.dir_name()))
+        };
+
+        if in_dir(Self::ShaderPack) {
+            Self::ShaderPack
+        } else if in_dir(Self::ResourcePack) {
+            Self::ResourcePack
+        } else {
+            Self::Mod
+        }
+    }
+}
+
+/// A folder to scan together with the kind of content it holds.
+#[derive(Debug, Clone)]
+pub struct ScanTarget {
+    pub kind: PackKind,
+    pub dir: PathBuf,
+}
+
+/// Folders to scan for a given `mods_dir`.
+///
+/// Always contains `mods_dir` itself. Launchers keep `resourcepacks/` and
+/// `shaderpacks/` as siblings of `mods/` under one instance root, so those
+/// are added when they exist.
+pub fn scan_targets(mods_dir: &Path) -> Vec<ScanTarget> {
+    let mut targets = vec![ScanTarget {
+        kind: PackKind::Mod,
+        dir: mods_dir.to_path_buf(),
+    }];
+
+    if let Some(instance_root) = mods_dir.parent() {
+        for kind in [PackKind::ResourcePack, PackKind::ShaderPack] {
+            let dir = instance_root.join(kind.dir_name());
+            if dir.is_dir() {
+                targets.push(ScanTarget { kind, dir });
+            }
+        }
+    }
+
+    targets
+}
+
 // ── File Discovery ────────────────────────────────────────────────────────
 
-/// Find all `.jar` files in a directory, sorted alphabetically by filename
-/// (case-insensitive).
+/// Find all files of `kind` in a directory, sorted alphabetically by
+/// filename (case-insensitive).
 ///
 /// Returns an empty `Vec` if the directory does not exist — this is not an
 /// error, just an empty result.
-pub fn find_jars(dir: &Path) -> crate::Result<Vec<PathBuf>> {
-    let mut jars: Vec<PathBuf> = Vec::new();
+pub fn find_files(dir: &Path, kind: PackKind) -> crate::Result<Vec<PathBuf>> {
+    let mut files: Vec<PathBuf> = Vec::new();
 
     let entries = match fs::read_dir(dir) {
         Ok(iter) => iter,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(jars),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(files),
         Err(e) => return Err(Error::Io(e)),
     };
 
@@ -36,23 +129,22 @@ pub fn find_jars(dir: &Path) -> crate::Result<Vec<PathBuf>> {
 
         let path = entry.path();
 
-        // Only regular files with a .jar extension (case-insensitive).
+        // Only regular files with this kind's extension (case-insensitive).
         if !path.is_file() {
             continue;
         }
 
-        let is_jar = path
+        let matches_extension = path
             .extension()
-            .map(|ext| ext.eq_ignore_ascii_case("jar"))
+            .map(|ext| ext.eq_ignore_ascii_case(kind.extension()))
             .unwrap_or(false);
 
-        if is_jar {
-            jars.push(path);
+        if matches_extension {
+            files.push(path);
         }
     }
 
-    // Sort by filename, case-insensitive, for display consistency.
-    jars.sort_by(|a, b| {
+    files.sort_by(|a, b| {
         let a_name = a
             .file_name()
             .map(|n| n.to_ascii_lowercase())
@@ -64,7 +156,17 @@ pub fn find_jars(dir: &Path) -> crate::Result<Vec<PathBuf>> {
         a_name.cmp(&b_name)
     });
 
-    Ok(jars)
+    Ok(files)
+}
+
+/// Every file Anvil can identify under `mods_dir` and its sibling pack
+/// folders, mods first.
+pub fn find_all_files(mods_dir: &Path) -> crate::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for target in scan_targets(mods_dir) {
+        files.extend(find_files(&target.dir, target.kind)?);
+    }
+    Ok(files)
 }
 
 // ── Hashing ───────────────────────────────────────────────────────────────

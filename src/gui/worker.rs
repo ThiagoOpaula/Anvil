@@ -548,17 +548,20 @@ async fn run_scan(
     progress: &dyn ProgressRenderer,
     event_tx: &crossbeam::channel::Sender<WorkerEvent>,
 ) {
-    let jars = match scanner::find_jars(&config.mods_dir) {
+    let files = match scanner::find_all_files(&config.mods_dir) {
         Ok(j) => j,
         Err(e) => {
             let _ = event_tx.send(WorkerEvent::Error(format!("scan: {}", e)));
             return;
         }
     };
-    let total_jars = jars.len();
-    if jars.is_empty() {
+    let total_jars = files.len();
+    if files.is_empty() {
         let _ = event_tx.send(WorkerEvent::Log {
-            message: format!("No JAR files found in {}.", config.mods_dir.display()),
+            message: format!(
+                "No mods, resource packs or shader packs found in {}.",
+                config.mods_dir.display()
+            ),
         });
         let _ = event_tx.send(WorkerEvent::ScanComplete {
             identified: vec![],
@@ -571,11 +574,11 @@ async fn run_scan(
 
     progress.start_phase("Hashing", total_jars as u64);
     let mut hashes: Vec<(PathBuf, String)> = Vec::with_capacity(total_jars);
-    for jar in &jars {
-        match scanner::compute_sha1(jar) {
-            Ok(hash) => hashes.push((jar.clone(), hash)),
+    for file in &files {
+        match scanner::compute_sha1(file) {
+            Ok(hash) => hashes.push((file.clone(), hash)),
             Err(e) => {
-                tracing::warn!(path = %jar.display(), error = %e, "skipping JAR");
+                tracing::warn!(path = %file.display(), error = %e, "skipping file");
             }
         }
         progress.increment(1);

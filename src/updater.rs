@@ -3,8 +3,8 @@
 //!
 //! The pipeline has these phases:
 //!
-//! 1. Discover JARs          (`scanner::find_jars`)
-//! 2. Hash every JAR         (`scanner::compute_sha1` in a loop)
+//! 1. Discover files         (`scanner::find_all_files` — mods + packs)
+//! 2. Hash every file        (`scanner::compute_sha1` in a loop)
 //! 3. Identify on Modrinth   (cache-aware, 4-way parallel)
 //! 4. Apply filters          (`filters::apply`)
 //! 5. Check for updates      (cache-aware, 4-way parallel)
@@ -15,8 +15,12 @@
 //! 10. Download updates      (sequential, with backup)
 //! 11. Write lockfile
 //! 12. Print final summary
+//!
+//! Downloads and backups are per-folder: a shader pack update lands back in
+//! `shaderpacks/` with its own `backup_*` directory, never in `mods/`.
 
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use futures::stream::{self, StreamExt};
 
@@ -41,29 +45,29 @@ pub async fn run(
     cache: &ApiCache,
     progress: &dyn ProgressRenderer,
 ) -> Result<RunSummary> {
-    // ── 1. Find JARs ─────────────────────────────────────────────────────
-    let jars = scanner::find_jars(&config.mods_dir)?;
-    if jars.is_empty() {
+    // ── 1. Find files (mods, then resource packs and shader packs) ───────
+    let files = scanner::find_all_files(&config.mods_dir)?;
+    if files.is_empty() {
         tracing::info!(
-            "no JAR files found in {} — nothing to do",
+            "no mods, resource packs or shader packs found in {} — nothing to do",
             config.mods_dir.display()
         );
         return Ok(RunSummary::default());
     }
-    let total_jars = jars.len();
-    tracing::info!("found {} JAR(s) in {}", total_jars, config.mods_dir.display());
+    let total_files = files.len();
+    tracing::info!("found {} file(s) to check", total_files);
 
-    // ── 2. Hash all JARs ─────────────────────────────────────────────────
-    progress.start_phase("Hashing", total_jars as u64);
-    let mut hashes: Vec<(PathBuf, String)> = Vec::with_capacity(total_jars);
-    for jar in &jars {
-        match scanner::compute_sha1(jar) {
-            Ok(hash) => hashes.push((jar.clone(), hash)),
+    // ── 2. Hash all files ────────────────────────────────────────────────
+    progress.start_phase("Hashing", total_files as u64);
+    let mut hashes: Vec<(PathBuf, String)> = Vec::with_capacity(total_files);
+    for file in &files {
+        match scanner::compute_sha1(file) {
+            Ok(hash) => hashes.push((file.clone(), hash)),
             Err(e) => {
                 tracing::warn!(
-                    path = %jar.display(),
+                    path = %file.display(),
                     error = %e,
-                    "skipping JAR — unable to compute SHA1"
+                    "skipping file — unable to compute SHA1"
                 );
             }
         }
@@ -180,15 +184,13 @@ pub async fn run(
         tracing::info!("filtered out {} mod(s)", filtered_out_count);
     }
 
-    // Record filtered-out outcomes.
-    let filtered_filenames: std::collections::HashSet<String> = filtered
-        .iter()
-        .map(|m| m.filename.clone())
-        .collect();
+    // Record filtered-out outcomes. Keyed by path, not filename: mods and
+    // packs live in different folders and may share a filename.
+    let filtered_paths: HashSet<&Path> = filtered.iter().map(|m| m.path.as_path()).collect();
 
     let filtered_outcomes: Vec<ModOutcome> = identified
         .iter()
-        .filter(|m| !filtered_filenames.contains(&m.filename))
+        .filter(|m| !filtered_paths.contains(m.path.as_path()))
         .map(|m| ModOutcome::FilteredOut {
             filename: m.filename.clone(),
             reason: "did not match include/exclude/loader/game-version filters".into(),
@@ -449,7 +451,7 @@ pub async fn run(
     if config.dry_run {
         tracing::info!("dry run — no files changed.");
         let summary = RunSummary {
-            total_jars,
+            total_jars: total_files,
             identified: identified_count,
             unknown: unknown_count,
             updates_available,
@@ -467,7 +469,7 @@ pub async fn run(
     if candidates.is_empty() {
         tracing::info!("no updates available.");
         let summary = RunSummary {
-            total_jars,
+            total_jars: total_files,
             identified: identified_count,
             unknown: unknown_count,
             updates_available: 0,
@@ -497,7 +499,7 @@ pub async fn run(
     let to_download: Vec<&UpdateCandidate> =
         candidates.iter().take(max_updates).collect();
 
-    let mut backup_dir: Option<PathBuf> = None;
+    let mut backup_dirs: HashMap<PathBuf, PathBuf> = HashMap::new();
     let mut updated_outcomes: Vec<ModOutcome> = Vec::new();
     let mut failed_outcomes: Vec<ModOutcome> = Vec::new();
 
@@ -517,16 +519,28 @@ pub async fn run(
                 ))
             })?;
 
-        let dest_path = config.mods_dir.join(&file.filename);
+        // Replace the file where it already lives, so packs stay in their
+        // own folder instead of being moved into mods/.
+        let dest_dir = candidate
+            .identified
+            .path
+            .parent()
+            .unwrap_or(&config.mods_dir)
+            .to_path_buf();
+        let dest_path = dest_dir.join(&file.filename);
 
-        // Create backup directory on first download.
-        if config.backup && backup_dir.is_none() {
+        // Create this folder's backup directory on first download from it.
+        if config.backup && !backup_dirs.contains_key(&dest_dir) {
             let gv = config.game_version.as_deref().unwrap_or("");
-            backup_dir = Some(backup::create_backup_dir(&config.mods_dir, gv)?);
+            backup_dirs.insert(
+                dest_dir.clone(),
+                backup::create_backup_dir(&dest_dir, gv)?,
+            );
         }
+        let backup_dir = backup_dirs.get(&dest_dir);
 
-        // Move (or delete) the old JAR.
-        if let Some(ref bd) = backup_dir {
+        // Move (or delete) the old file.
+        if let Some(bd) = backup_dir {
             backup::move_to_backup(&candidate.identified.path, bd)?;
         } else {
             // No backup — just remove the old file so we don't leave
@@ -599,7 +613,7 @@ pub async fn run(
                 let _ = std::fs::remove_file(&dest_path);
 
                 // Restore old file from backup if we have one.
-                if let Some(ref bd) = backup_dir {
+                if let Some(bd) = backup_dir {
                     let backup_path = bd.join(&candidate.identified.filename);
                     if backup_path.exists() {
                         let _ = std::fs::rename(&backup_path, &candidate.identified.path);
@@ -626,7 +640,7 @@ pub async fn run(
                 let _ = std::fs::remove_file(&dest_path);
 
                 // Restore old file from backup.
-                if let Some(ref bd) = backup_dir {
+                if let Some(bd) = backup_dir {
                     let backup_path = bd.join(&candidate.identified.filename);
                     if backup_path.exists() {
                         let _ = std::fs::rename(&backup_path, &candidate.identified.path);
@@ -667,7 +681,7 @@ pub async fn run(
 
     // ── 12. Print final summary ──────────────────────────────────────────
     let summary = RunSummary {
-        total_jars,
+        total_jars: total_files,
         identified: identified_count,
         unknown: unknown_count,
         updates_available,

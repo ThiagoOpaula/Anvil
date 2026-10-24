@@ -24,7 +24,7 @@
 
 - [ ] 🔄 **Self-updater** — Anvil updates itself
 - [ ] 🔎 **Mod discovery** — browse Modrinth from inside the app, install in one click
-- [ ] 🎨 **Shaders + resource packs** — scan and update beyond just mods
+- [x] 🎨 **Shaders + resource packs** — scan and update beyond just mods
 - [ ] 👁️ **CLI daemon mode** — `anvil watch` auto-identifies new JARs
 - [ ] 🐧 **Linux/macOS packages** — `.deb`, `.rpm`, Homebrew, AUR
 

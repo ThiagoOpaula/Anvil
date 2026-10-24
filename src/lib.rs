@@ -1,8 +1,10 @@
 //! Anvil — Minecraft Mod Updater.
 //!
-//! Scans a mods folder, identifies each JAR via SHA1 hash against the
-//! Modrinth API, checks for newer versions matching the same loader and
-//! game version, and downloads updates (backing up old files by default).
+//! Scans a mods folder — plus the sibling `resourcepacks/` and
+//! `shaderpacks/` folders when they exist — identifies each file via SHA1
+//! hash against the Modrinth API, checks for newer versions matching the
+//! same loader and game version, and downloads updates (backing up old
+//! files by default).
 //!
 //! Named after the anvil — Minecraft's repair-and-upgrade block.
 
@@ -117,24 +119,24 @@ pub async fn run_list(
     install_deps: bool,
     assume_yes: bool,
 ) -> Result<()> {
-    // 1. Find JARs
-    let jars = scanner::find_jars(&config.mods_dir)?;
-    if jars.is_empty() {
-        tracing::info!("No JAR files found in {}.", config.mods_dir.display());
+    // 1. Find files (mods, resource packs, shader packs)
+    let files = scanner::find_all_files(&config.mods_dir)?;
+    if files.is_empty() {
+        tracing::info!("No mods, resource packs or shader packs found in {}.", config.mods_dir.display());
         return Ok(());
     }
 
     // 2. Hash all
-    progress.start_phase("Hashing", jars.len() as u64);
-    let mut hashes: Vec<(PathBuf, String)> = Vec::with_capacity(jars.len());
-    for jar in &jars {
-        match scanner::compute_sha1(jar) {
-            Ok(hash) => hashes.push((jar.clone(), hash)),
+    progress.start_phase("Hashing", files.len() as u64);
+    let mut hashes: Vec<(PathBuf, String)> = Vec::with_capacity(files.len());
+    for file in &files {
+        match scanner::compute_sha1(file) {
+            Ok(hash) => hashes.push((file.clone(), hash)),
             Err(e) => {
                 tracing::warn!(
-                    path = %jar.display(),
+                    path = %file.display(),
                     error = %e,
-                    "skipping JAR — unable to compute SHA1"
+                    "skipping file — unable to compute SHA1"
                 );
             }
         }
@@ -221,8 +223,8 @@ pub async fn run_list(
     let filtered = filters::apply(&identified, &filter_opts);
     let filtered_out = before_filter - filtered.len();
 
-    // 5. Print table: columns = ["Filename", "Name", "Version", "Loader", "Game Versions"]
-    let headers: &[&str] = &["Filename", "Name", "Version", "Loader", "Game Versions"];
+    // 5. Print table: one row per file, mods and packs alike.
+    let headers: &[&str] = &["Filename", "Kind", "Name", "Version", "Loader", "Game Versions"];
     let mut rows: Vec<Vec<String>> = Vec::new();
 
     for m in &filtered {
@@ -240,6 +242,7 @@ pub async fn run_list(
 
         rows.push(vec![
             m.filename.clone(),
+            scanner::PackKind::of_path(&m.path).label().to_string(),
             m.current_version.name.clone(),
             m.current_version.version_number.clone(),
             loaders,
@@ -255,8 +258,8 @@ pub async fn run_list(
 
     // 6. Print summary counts
     tracing::info!(
-        "Total JARs: {}  |  Identified: {}  |  Unknown: {}  |  Filtered out: {}  |  Shown: {}",
-        jars.len(),
+        "Total files: {}  |  Identified: {}  |  Unknown: {}  |  Filtered out: {}  |  Shown: {}",
+        files.len(),
         before_filter,
         unknown_count,
         filtered_out,

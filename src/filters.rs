@@ -3,6 +3,7 @@
 use regex::Regex;
 use tracing;
 
+use crate::scanner::PackKind;
 use crate::types::{FilterOpts, IdentifiedMod};
 
 /// Apply include/exclude and loader/game-version filters.
@@ -13,7 +14,8 @@ use crate::types::{FilterOpts, IdentifiedMod};
 ///    (no-op when `opts.include` is empty).
 /// 2. **Exclude** — drop mods matching any exclude pattern.
 /// 3. **Loader** — drop mods whose `current_version.loaders` doesn't contain
-///    the requested loader (no-op when `opts.loader` is `None`).
+///    the requested loader (no-op when `opts.loader` is `None`). Resource
+///    packs and shader packs are exempt: loader is a mod-only concept.
 /// 4. **Game version** — drop mods whose `current_version.game_versions`
 ///    doesn't contain the requested game version (no-op when
 ///    `opts.game_version` is `None`).
@@ -47,7 +49,13 @@ pub fn apply(mods: &[IdentifiedMod], opts: &FilterOpts) -> Vec<IdentifiedMod> {
         }
 
         // ── 3. Loader filter ───────────────────────────────────────────
-        if let Some(ref loader) = opts.loader {
+        //
+        // Loaders are a mod concept: resource packs and shader packs are
+        // scoped by game version only, and their `loaders` tags
+        // (minecraft/iris/optifine) would never match a mod loader.
+        if let Some(ref loader) = opts.loader
+            && matches!(PackKind::of_path(&m.path), PackKind::Mod)
+        {
             let has_loader = m
                 .current_version
                 .loaders

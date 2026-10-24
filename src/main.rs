@@ -72,19 +72,42 @@ async fn main() -> anyhow::Result<()> {
     // ── 5. Dispatch on subcommand ────────────────────────────────────────
     match cli.command {
         Some(Command::Rollback) => {
-            match anvil::backup::rollback(&resolved.mods_dir) {
-                Ok(count) => {
-                    println!("Restored {} mod(s) from backup.", count);
+            // Mods, resource packs and shader packs each keep their own
+            // backup folders, so roll back every folder that has one.
+            let mut restored = 0usize;
+            let mut rolled_back = 0usize;
+            let mut failure: Option<Error> = None;
+
+            for target in anvil::scanner::scan_targets(&resolved.mods_dir) {
+                match anvil::backup::rollback(&target.dir) {
+                    Ok(count) => {
+                        restored += count;
+                        rolled_back += 1;
+                    }
+                    Err(Error::NoBackups) => {}
+                    Err(e) => {
+                        failure = Some(e);
+                        break;
+                    }
                 }
-                Err(Error::NoBackups) => {
+            }
+
+            match failure {
+                Some(e) => {
+                    eprintln!("Rollback failed: {}", e);
+                    anvil::interactive::pause_before_exit();
+                    std::process::exit(1);
+                }
+                None if rolled_back == 0 => {
                     eprintln!("No backups found in {}.", resolved.mods_dir.display());
                     anvil::interactive::pause_before_exit();
                     std::process::exit(1);
                 }
-                Err(e) => {
-                    eprintln!("Rollback failed: {}", e);
-                    anvil::interactive::pause_before_exit();
-                    std::process::exit(1);
+                None => {
+                    println!(
+                        "Restored {} file(s) from {} backup(s).",
+                        restored, rolled_back
+                    );
                 }
             }
         }

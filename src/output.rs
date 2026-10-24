@@ -182,7 +182,7 @@ pub fn format_summary(summary: &RunSummary) -> String {
     out.push_str("         RUN SUMMARY       \n");
     out.push_str("═══════════════════════════\n");
     out.push_str(&format!(
-        "  Total JARs found:  {}\n",
+        "  Total files found: {}\n",
         summary.total_jars
     ));
     out.push_str(&format!(

@@ -9,16 +9,18 @@ use clap::{Args, Parser, Subcommand};
 
 /// ⚒ Anvil — Minecraft Mod Updater
 ///
-/// Scans a mods folder, identifies each JAR via SHA1 hash against the
-/// Modrinth API, checks for newer versions matching the same loader and
-/// game version, and downloads updates (backing up old files by default).
+/// Scans a mods folder (plus sibling resourcepack and shaderpack folders),
+/// identifies each file via SHA1 hash against the Modrinth API, checks for
+/// newer versions matching the same loader and game version, and downloads
+/// updates (backing up old files by default).
 #[derive(Parser)]
 #[command(name = "anvil", version, about)]
 pub struct Cli {
     /// Path to the Minecraft mods folder.
     ///
-    /// Defaults to the standard Minecraft mods directory for your platform
-    /// (e.g. %APPDATA%/.minecraft/mods on Windows).
+    /// `resourcepacks/` and `shaderpacks/` sitting next to it are scanned
+    /// too. Defaults to the standard Minecraft mods directory for your
+    /// platform (e.g. %APPDATA%/.minecraft/mods on Windows).
     #[arg(long, global = true, value_name = "PATH")]
     pub mods_dir: Option<PathBuf>,
 
